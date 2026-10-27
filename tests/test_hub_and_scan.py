@@ -235,3 +235,24 @@ def test_download_resumes_when_another_download_was_cancelled(tmp_path, monkeypa
     monkeypatch.setattr(hub, "remote_files", lambda repo, variant, skip=(): [("model_index.json", 1)])
     assert hub.download("org/model", None, lambda n, t: None, threading.Event()) == tmp_path / "snap"
     assert len(calls) == 2
+
+
+def test_hf_cache_in_a_model_folder_is_read(tmp_path):
+    """A model folder that is another app's HF cache: pipelines count as installed, single files are scanned."""
+    other = tmp_path / "zcore-img" / "models" / "hf" / "hub"
+    other.mkdir(parents=True)
+    snap = _snapshot(other, "org/model")
+    (snap / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    lora_snap = other / "models--someone--cool-lora" / "snapshots" / ("b" * 40)
+    lora_snap.mkdir(parents=True)
+    _fake(lora_snap / "pytorch_lora_weights.safetensors", {"lora_unet_down_blocks_0_attn.lora_down.weight": (4, 8),
+                                                           "lora_te2_text.lora_up.weight": (8, 4)})
+
+    main_cache = tmp_path / "main-cache"
+    hub = HubClient(lambda: None, lambda: str(main_cache), tmp_path / "manifests", lambda: [str(tmp_path / "zcore-img")])
+    assert hub.snapshot("org/model") == snap and hub.is_installed("org/model")
+    assert [p["repo"] for p in hub.cached_pipelines()] == ["org/model"]
+
+    lib = LocalLibrary(tmp_path / "index.json")
+    found = lib.scan([str(tmp_path / "zcore-img")], auto=False)
+    assert [(m.name, m.kind, m.source) for m in found] == [("cool-lora · pytorch_lora_weights", "lora", "Hugging Face")]

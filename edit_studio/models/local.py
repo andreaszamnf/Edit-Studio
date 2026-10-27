@@ -88,7 +88,28 @@ BASE_REPOS = {
     ("wan_t2v", "14b"): "Wan-AI/Wan2.1-T2V-14B-Diffusers",
     ("wan_ti2v", "5b"): "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
 }
+# Other repos whose parts (text encoder, VAE, configs) also suit a family's single files; one the user already
+# has is used instead of downloading the default. A version in the file name ("2509") picks its own repo first.
+BASE_ALTERNATIVES = {
+    "qwen_image": ("Qwen/Qwen-Image-2512", "Qwen/Qwen-Image"),
+    "qwen_image_edit": ("Qwen/Qwen-Image-Edit-2511", "Qwen/Qwen-Image-Edit-2509"),
+}
 SINGLE_FILE_CHECKPOINT_FAMILIES = ("sd15", "sdxl")
+
+
+def version_base(lm: "LocalModel") -> str | None:
+    """The repo of the exact version named in the file ("Qwen-Image-Edit-2509-Q4_K_M" -> ...-Edit-2509)."""
+    name = lm.name.lower()
+    for repo in BASE_ALTERNATIVES.get(lm.family or "", ()):
+        tag = repo.rsplit("-", 1)[-1]
+        if tag.isdigit() and tag in name:
+            return repo
+    return None
+
+
+def base_candidates(lm: "LocalModel") -> list[str]:
+    """Repos that can complete a single-file model: the default first, then compatible ones."""
+    return list(dict.fromkeys(([lm.base_repo] if lm.base_repo else []) + list(BASE_ALTERNATIVES.get(lm.family or "", ()))))
 
 
 @dataclass
@@ -397,7 +418,7 @@ def roots_for(folders: list[str], auto: bool) -> list[Root]:
         p = Path(f).expanduser()
         if not p.is_dir():
             continue
-        root = _layout(p) or Root(p, "Folder", None)
+        root = _layout(p) or Root(p, "Hugging Face" if _hf_cache(p) else "Folder", None)
         roots.setdefault(os.path.normcase(str(root.path.resolve())), root)
     if auto:
         for root in detect_roots():
@@ -406,12 +427,32 @@ def roots_for(folders: list[str], auto: bool) -> list[Root]:
 
 
 # ----------------------------------------------------------------------------- scanning
+def _hf_cache(folder: Path) -> bool:
+    from .hub import hf_caches_in
+
+    return bool(hf_caches_in(folder))
+
+
+def _is_pipeline_repo(repo_dir: Path) -> bool:
+    """A diffusers pipeline in an HF cache (listed as one model by the hub client, not file by file)."""
+    snaps = repo_dir / "snapshots"
+    try:
+        return any((s / "model_index.json").exists() for s in snaps.iterdir())
+    except OSError:
+        return False
+
+
 def _iter_files(folder: Path, max_depth: int):
     base_depth = len(folder.parts)
     for dirpath, dirnames, filenames in os.walk(folder, followlinks=True):
-        if len(Path(dirpath).parts) - base_depth >= max_depth:
+        if len(Path(dirpath).parts) - base_depth >= max_depth + (3 if "models--" in dirpath else 0):
             dirnames[:] = []
-        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in ("__pycache__", ".git")]
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and d not in ("__pycache__", ".git", "blobs", ".no_exist")
+            and not (d.startswith(("datasets--", "spaces--")))
+            and not (d.startswith("models--") and _is_pipeline_repo(Path(dirpath) / d))
+        ]
         for fn in filenames:
             if fn.lower().endswith(MODEL_EXTS):
                 yield Path(dirpath) / fn
@@ -431,10 +472,11 @@ def inspect_file(path: Path, source: str, kind_hint: str | None) -> LocalModel:
     st = path.stat()
     ext = path.suffix.lower()
     fmt = {".safetensors": "safetensors", ".sft": "safetensors", ".gguf": "gguf"}.get(ext, ext.lstrip("."))
+    repo = next((part[len("models--"):].split("--")[-1] for part in path.parts if part.startswith("models--")), None)
     base = dict(
         id=model_id(str(path)),
         path=str(path),
-        name=path.stem,
+        name=f"{repo} · {path.stem}" if repo and repo != path.stem else path.stem,  # HF cache: generic file names
         fmt=fmt,
         size=st.st_size,
         mtime=st.st_mtime,

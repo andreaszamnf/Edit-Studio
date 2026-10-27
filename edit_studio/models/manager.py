@@ -355,7 +355,7 @@ class ModelManager:
                 name=lm.name,
                 family=FAMILIES[lm.family],
                 kind=kind,
-                repo=lm.base_repo,
+                repo=self.base_repo(lm),
                 path=lm.path,
                 model_variant=lm.variant,
                 local=lm,
@@ -363,6 +363,18 @@ class ModelManager:
                 pipeline_config=pc,
             )
         raise ModelError("model_missing", model=model_id)
+
+    def base_repo(self, lm: LocalModel) -> str | None:
+        """Repo with the parts a single-file model lacks: the version its name says, else one already installed,
+        else the default (then only its small parts are downloaded)."""
+        from .local import base_candidates, version_base
+
+        named = version_base(lm)
+        if named:
+            return named
+        skip = FAMILIES[lm.family].denoisers[:1] if lm.family in FAMILIES else ()
+        cands = base_candidates(lm)
+        return next((r for r in cands if self.hub.is_installed(r, skip)), cands[0] if cands else None)
 
     # ------------------------------------------------------------------ install state
     def missing_downloads(self, src: ModelSource) -> list[dict]:

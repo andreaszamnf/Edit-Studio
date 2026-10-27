@@ -161,9 +161,9 @@ def create_app(services: Services, allow_remote: bool = False) -> FastAPI:
                 d["prompt_note"] = fam.prompt_note
                 d["negative_prompt"] = fam.negative_prompt
                 d["defaults"] = family_defaults(lm.family, lm.variant)
-                d["needs"] = (
-                    [] if not lm.base_repo or S.hub.is_installed(lm.base_repo, fam.denoisers[:1]) else [lm.base_repo]
-                )
+                base = S.models.base_repo(lm)
+                d["base_repo"] = base
+                d["needs"] = [] if not base or S.hub.is_installed(base, fam.denoisers[:1]) else [base]
                 if lm.supported and not d["needs"]:  # with the base parts missing the sizes are unknown
                     d["plan"] = _plan_of(lm.id)
             local.append(d)
@@ -352,7 +352,8 @@ def create_app(services: Services, allow_remote: bool = False) -> FastAPI:
         if allow_remote:
             raise HTTPException(403, "only on this computer")
         target = str(body.get("target", "outputs"))
-        folders = {"outputs": S.paths.outputs, "inputs": S.paths.inputs, "home": S.paths.home, "tools": S.paths.tools}
+        folders = {"outputs": S.paths.outputs, "inputs": S.paths.inputs, "home": S.paths.home, "tools": S.paths.tools,
+                   "logs": S.paths.home / "logs"}
         if target == "hf_cache":
             from .models.hub import cache_root
 

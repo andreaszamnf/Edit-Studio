@@ -25,3 +25,19 @@ def test_out_of_memory_replans_with_more_headroom_until_sequential(two_gpu_servi
     assert mm.gpu_range("z-image-turbo", [0, 1]) == (1, 1)
     # other GPU sets keep their own (unharmed) plans
     assert mm.plan(src, [1]).mode == "offload"
+
+
+def test_single_files_use_the_base_repo_you_have(services, monkeypatch):
+    from edit_studio.models.local import LocalModel
+
+    def gguf(name, fam, base):
+        return LocalModel("local:x", "x.gguf", name, "denoiser", fam, "", "gguf", "Q4", 1, 0.0, "test", True, "", base)
+
+    mm = services.models
+    # the version in the file name wins: 2509 weights need the 2509 configs
+    assert mm.base_repo(gguf("Qwen-Image-Edit-2509-Q4_K_M", "qwen_image_edit", "Qwen/Qwen-Image-Edit-2511")) == "Qwen/Qwen-Image-Edit-2509"
+    # otherwise an installed compatible repo instead of downloading the default
+    monkeypatch.setattr(services.hub, "is_installed", lambda repo, skip=(): repo == "Qwen/Qwen-Image")
+    assert mm.base_repo(gguf("qwen-image-Q4_K_M", "qwen_image", "Qwen/Qwen-Image-2512")) == "Qwen/Qwen-Image"
+    monkeypatch.setattr(services.hub, "is_installed", lambda repo, skip=(): False)
+    assert mm.base_repo(gguf("qwen-image-Q4_K_M", "qwen_image", "Qwen/Qwen-Image-2512")) == "Qwen/Qwen-Image-2512"

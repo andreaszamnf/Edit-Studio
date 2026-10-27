@@ -331,6 +331,7 @@ class JobManager:
             status, key, msg, info = "failed", e.key, str(e), dict(e.info)
         except Exception as e:  # noqa: BLE001 - reported to the UI
             status, key, msg = "failed", _classify(e), f"{type(e).__name__}: {e}"
+            info = {"where": _where(e)}
             log.error("Job %s (%s) failed:\n%s", job.id, job.task, traceback.format_exc())
         try:
             self._finish(job, status, key=key, message=msg, info=info)
@@ -361,6 +362,23 @@ class JobManager:
         self.emit(job)
         if job.outputs:
             self.services.bus.publish("gallery", {"added": job.outputs})
+
+
+def _where(e: BaseException) -> str:
+    """Where an unexpected error happened: the app's last frame and, if different, the library's."""
+
+    def fmt(f) -> str:
+        path = f.filename.replace("\\", "/")
+        return f"{'/'.join(path.split('/')[-2:])}:{f.lineno} {f.name}"
+
+    frames = traceback.extract_tb(e.__traceback__)
+    if not frames:
+        return ""
+    ours = [f for f in frames if "edit_studio" in f.filename.replace("\\", "/")]
+    parts = [fmt(ours[-1])] if ours else []
+    if not ours or frames[-1] is not ours[-1]:
+        parts.append(fmt(frames[-1]))
+    return " → ".join(parts)
 
 
 def _use_gpu(index: int) -> None:

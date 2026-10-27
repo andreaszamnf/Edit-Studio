@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 from pathlib import Path
@@ -31,6 +32,37 @@ def cache_root(cache_dir: str | None) -> Path:
 
 def repo_folder(repo: str, cache_dir: str | None) -> Path:
     return cache_root(cache_dir) / ("models--" + repo.replace("/", "--"))
+
+
+def is_hf_cache(path: Path) -> bool:
+    """A Hugging Face hub cache folder: it holds `models--org--name` folders."""
+    try:
+        return any(p.name.startswith("models--") and p.is_dir() for p in path.iterdir())
+    except OSError:
+        return False
+
+
+def hf_caches_in(folder: str | Path, depth: int = 3, budget: int = 400) -> list[Path]:
+    """HF caches in a model folder the user added: the folder itself or folders up to `depth` levels inside
+    (e.g. `models/hf/hub`), looking at no more than `budget` folders (a whole drive may have been added)."""
+    base = Path(folder).expanduser()
+    if not base.is_dir():
+        return []
+    found: list[Path] = []
+    queue = [(base, 0)]
+    while queue and budget > 0:
+        path, level = queue.pop(0)
+        budget -= 1
+        if is_hf_cache(path):
+            found.append(path)  # its model folders are not entered
+            continue
+        if level < depth:
+            try:
+                subs = sorted(p for p in path.iterdir() if p.is_dir() and not p.name.startswith((".", "$")))
+            except OSError:
+                continue
+            queue += [(p, level + 1) for p in subs]
+    return found
 
 
 def local_snapshot(repo: str, cache_dir: str | None) -> Path | None:
@@ -137,11 +169,41 @@ def _abort_transfers() -> None:
 
 
 class HubClient:
-    def __init__(self, token_fn: Callable[[], str | None], cache_fn: Callable[[], str | None], manifest_dir: Path):
+    def __init__(
+        self,
+        token_fn: Callable[[], str | None],
+        cache_fn: Callable[[], str | None],
+        manifest_dir: Path,
+        folders_fn: Callable[[], list[str]] = lambda: [],
+    ):
         self.token_fn = token_fn
-        self.cache_fn = cache_fn
+        self.cache_fn = cache_fn  # where downloads go
+        self.folders_fn = folders_fn  # the user's model folders: any HF cache among them is read too
         self.manifest_dir = manifest_dir
         self._aborts = 0  # cancelled downloads so far (each one stops all Xet transfers)
+        self._extra: tuple[float, tuple, list[str]] = (0.0, (), [])
+
+    def caches(self) -> list[str | None]:
+        """The download cache first, then HF caches found in the user's model folders (e.g. another app's)."""
+        folders = tuple(self.folders_fn() or ())
+        at, key, extra = self._extra
+        if key != folders or time.time() - at > 30:
+            seen = {os.path.normcase(str(cache_root(self.cache_fn()).absolute()))}
+            extra = []
+            for f in folders:
+                for c in hf_caches_in(f):
+                    k = os.path.normcase(str(c.absolute()))
+                    if k not in seen:
+                        seen.add(k)
+                        extra.append(str(c))
+            self._extra = (time.time(), folders, extra)
+        return [self.cache_fn(), *extra]
+
+    def _cache_of(self, repo: str) -> str | None:
+        for c in self.caches():
+            if local_snapshot(repo, c) is not None:
+                return c
+        return self.cache_fn()
 
     # ---------------------------------------------------------------- remote
     def remote_files(self, repo: str, variant: str | None, skip_weights: tuple[str, ...] = ()) -> list[tuple[str, int]]:
@@ -235,7 +297,11 @@ class HubClient:
         self._manifest_path(repo).write_text(json.dumps(payload), encoding="utf-8")
 
     def snapshot(self, repo: str) -> Path | None:
-        return local_snapshot(repo, self.cache_fn())
+        for c in self.caches():
+            snap = local_snapshot(repo, c)
+            if snap is not None:
+                return snap
+        return None
 
     def is_installed(self, repo: str, skip_weights: tuple[str, ...] = ()) -> bool:
         snap = self.snapshot(repo)
@@ -252,13 +318,13 @@ class HubClient:
         return all((snap / f).exists() for f in files)
 
     def size_on_disk(self, repo: str) -> int:
-        folder = repo_folder(repo, self.cache_fn()) / "blobs"
+        folder = repo_folder(repo, self._cache_of(repo)) / "blobs"
         if not folder.is_dir():
             return 0
         return sum(f.stat().st_size for f in folder.iterdir() if f.is_file())
 
     def delete(self, repo: str) -> None:
-        folder = repo_folder(repo, self.cache_fn())
+        folder = repo_folder(repo, self._cache_of(repo))
         if folder.is_dir():
             shutil.rmtree(folder)
         self._manifest_path(repo).unlink(missing_ok=True)
@@ -266,15 +332,23 @@ class HubClient:
     def cached_pipelines(self) -> list[dict]:
         """Diffusers pipelines present in the HF cache (downloaded by any tool)."""
         out = []
-        try:
-            info = scan_cache_dir(self.cache_fn())
-        except Exception as e:  # cache folder missing or unreadable
-            log.info("HF cache scan skipped: %s", e)
-            return out
-        for repo in info.repos:
-            if repo.repo_type != "model":
+        seen: set[str] = set()
+        for cache in self.caches():
+            try:
+                info = scan_cache_dir(cache)
+            except Exception as e:  # cache folder missing or unreadable
+                log.info("HF cache scan skipped (%s): %s", cache, e)
                 continue
-            snap = local_snapshot(repo.repo_id, self.cache_fn())
+            out += self._pipelines_in(cache, info, seen)
+        return out
+
+    def _pipelines_in(self, cache, info, seen: set[str]) -> list[dict]:
+        out = []
+        for repo in info.repos:
+            if repo.repo_type != "model" or repo.repo_id in seen:
+                continue
+            seen.add(repo.repo_id)
+            snap = local_snapshot(repo.repo_id, cache)
             if snap is None or not (snap / "model_index.json").is_file():
                 continue
             try:

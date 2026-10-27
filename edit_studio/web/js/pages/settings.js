@@ -65,7 +65,9 @@ export function settingsPage(root) {
           h("button", { class: "small", onclick: () => api.open("outputs") }, "📂 " + t("gallery.title")),
           h("button", { class: "small", onclick: () => api.open("home") }, "📂 " + t("settings.data_dir"))),
       ),
-      card(t("settings.about"), h("div", { class: "muted small" }, `Edit Studio ${store.system ? store.system.version : ""}`)),
+      card(t("settings.about"), h("div", { class: "muted small" }, `Edit Studio ${store.system ? store.system.version : ""}`),
+        h("div", { class: "muted small" }, t("settings.logs_hint")),
+        h("div", { class: "row wrap" }, h("button", { class: "small", onclick: () => api.open("logs") }, "📂 " + t("settings.logs")))),
     )),
   );
 }

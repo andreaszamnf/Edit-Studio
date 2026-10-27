@@ -32,7 +32,8 @@ class Services:
         paths.ensure()
         settings = SettingsStore(paths)
         hw = hw or detect()
-        hub = HubClient(settings.hf_token, settings.hf_cache_dir, paths.cache / "hf-manifests")
+        hub = HubClient(settings.hf_token, settings.hf_cache_dir, paths.cache / "hf-manifests",
+                        lambda: settings.settings.model_folders)
         local = LocalLibrary(paths.local_index)
         storage = Storage(paths, lambda: settings.settings.image_format)
         svc = cls(paths, settings, hw, EventBus(), hub, local, storage)
