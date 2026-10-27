@@ -55,6 +55,17 @@ class Hardware:
         except Exception:
             return self.gpus[index].total_bytes if index < len(self.gpus) else 0
 
+    def memory_split(self, index: int) -> tuple[int, int]:
+        """(free bytes, bytes held by this app) on a CUDA GPU, for display."""
+        if self.backend != "cuda":
+            return 0, 0
+        try:
+            import torch
+
+            return int(torch.cuda.mem_get_info(index)[0]), int(torch.cuda.memory_reserved(index))
+        except Exception:
+            return 0, 0
+
     @staticmethod
     def ram_total() -> int:
         return int(psutil.virtual_memory().total)
@@ -93,6 +104,8 @@ class Hardware:
                     "name": g.name,
                     "total_gb": round(g.total_bytes / GB, 1),
                     "usable_gb": round(self.usable_vram(g.index) / GB, 1),
+                    "free_gb": round(self.memory_split(g.index)[0] / GB, 1),
+                    "app_gb": round(self.memory_split(g.index)[1] / GB, 1),
                     "capability": f"{g.capability[0]}.{g.capability[1]}",
                 }
                 for g in self.gpus

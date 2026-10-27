@@ -17,7 +17,8 @@ export function modelsPage(root) {
     if (hw.backend === "cuda") {
       for (const g of hw.gpus) {
         items.push(h("div", { class: "hw-item" }, h("div", { class: "faint small" }, `GPU ${g.index}`), h("div", { class: "big" }, g.name),
-          h("div", { class: "muted small" }, t("models.vram", { total: g.total_gb, free: g.usable_gb }))));
+          h("div", { class: "muted small" }, t("models.vram", { total: g.total_gb, free: g.free_gb ?? g.usable_gb })),
+          g.app_gb >= 0.1 ? h("div", { class: "muted small" }, t("models.vram_app", { app: g.app_gb })) : null));
       }
     } else {
       items.push(h("div", { class: "notice warn" }, hw.backend === "mps" ? "Apple Silicon (MPS)" : t("models.no_gpu")));
@@ -102,7 +103,7 @@ export function modelsPage(root) {
       h("h2", { class: "section-title" }, t("models.loaded"), h("span", { class: "spacer" }),
         loaded.length ? h("button", { class: "small", onclick: async () => { await api.unload(); await loadSystem(); await loadModels(true); } }, t("models.unload")) : null),
       loaded.length ? h("div", { class: "col" }, ...loaded.map((l) => h("div", { class: "row card", style: { padding: "8px 12px" } },
-        h("strong", null, l.model), h("span", { class: "tag accent" }, planLabel(l.plan)), h("span", { class: "muted small" }, l.slots.map((s) => `GPU ${s}`).join(" + ")))))
+        h("strong", null, l.name || l.model), h("span", { class: "tag accent" }, planLabel(l.plan)), h("span", { class: "muted small" }, l.slots.map((s) => `GPU ${s}`).join(" + ")))))
         : h("div", { class: "muted" }, t("models.none_loaded")),
       h("h2", { class: "section-title" }, t("models.catalog")),
       h("div", { class: "hint", style: { marginBottom: "10px" } }, t("models.catalog_hint")),

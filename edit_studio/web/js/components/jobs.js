@@ -153,7 +153,7 @@ export function mountGpuStatus() {
       box.append(h("div", { class: `gpu-chip ${job ? "busy" : ""}`, title: g.name },
         h("div", { class: "gpu-name" }, h("span", { class: "dot" }), hw.backend === "cuda" ? `GPU ${g.index}` : g.name,
           h("span", { class: "spacer" }), h("span", { class: "gpu-mem faint" }, g.total_gb ? `${Math.round(g.total_gb)} GB` : "")),
-        h("div", { class: "gpu-model" }, job ? jobTitle(job) : model ? model.model : "—"),
+        h("div", { class: "gpu-model" }, job ? jobTitle(job) : model ? (model.name || model.model) : "—"),
       ));
     }
   });

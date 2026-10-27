@@ -102,6 +102,7 @@ class LoadedModel:
     plan: Plan
     pipe: Any
     slots: list[int]
+    name: str = ""
     loras: tuple = ()
     last_used: float = field(default_factory=time.time)
 
@@ -565,7 +566,8 @@ class ModelManager:
             for lm in self.loaded.values():
                 seen.setdefault(id(lm), lm)
             return [
-                {"model": lm.source_id, "slots": lm.slots, "plan": lm.plan.public(), "loras": [n for n, _ in lm.loras]}
+                {"model": lm.source_id, "name": lm.name or lm.source_id, "slots": lm.slots, "plan": lm.plan.public(),
+                 "loras": [n for n, _ in lm.loras]}
                 for lm in seen.values()
             ]
 
@@ -640,7 +642,7 @@ class ModelManager:
                 status("fallback:" + attempt.mode)
                 continue
             lm_slots = attempt.devices if attempt.mode in ("split", "shard") else slots[:1]
-            lm = LoadedModel(f"{src.id}|{attempt.key}", src.id, attempt, pipe, lm_slots)
+            lm = LoadedModel(f"{src.id}|{attempt.key}", src.id, attempt, pipe, lm_slots, src.name)
             with self.lock:
                 for s in lm.slots:
                     self.loaded[s] = lm
