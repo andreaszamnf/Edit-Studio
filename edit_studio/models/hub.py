@@ -181,6 +181,7 @@ class HubClient:
         self.folders_fn = folders_fn  # the user's model folders: any HF cache among them is read too
         self.manifest_dir = manifest_dir
         self._aborts = 0  # cancelled downloads so far (each one stops all Xet transfers)
+        self._active = 0  # downloads running now
         self._extra: tuple[float, tuple, list[str]] = (0.0, (), [])
 
     def caches(self) -> list[str | None]:
@@ -275,6 +276,19 @@ class HubClient:
                 result["error"] = e
 
         worker = threading.Thread(target=run, name=f"download-{repo}", daemon=True)
+        self._active += 1
+        try:
+            return self._wait(worker, result, cancel_event)
+        finally:
+            self._active -= 1
+
+    def abort_downloads(self) -> None:
+        """Stop every transfer now (the app is quitting)."""
+        if self._active:
+            self._aborts += 1
+            _abort_transfers()
+
+    def _wait(self, worker: threading.Thread, result: dict[str, Any], cancel_event: threading.Event) -> str:
         worker.start()
         while worker.is_alive():
             worker.join(0.25)

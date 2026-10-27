@@ -35,6 +35,18 @@ foreach ($port in 8765..8774) {
     } catch { }
     if ($running) { Fail "Το Edit Studio είναι ανοιχτό. Κλείσ' το και ξανατρέξε αυτό το αρχείο." "Edit Studio is running. Close it and run this again." }
 }
+# A window-less copy may still be running (older versions waited for a download to finish before quitting):
+# its files are in use, so stop it.
+$venvDir = Join-Path $Root ".venv"
+$stale = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and $_.Path.StartsWith($venvDir, [System.StringComparison]::OrdinalIgnoreCase) })
+if ($stale.Count -gt 0) {
+    Write-Host ""
+    Write-Host "    Κλείνω το Edit Studio που έτρεχε ακόμα στο παρασκήνιο..." -ForegroundColor Yellow
+    Write-Host "    Closing Edit Studio, still running in the background..." -ForegroundColor DarkGray
+    $stale | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
 
 # ---------------------------------------------------------------- graphics card
 Step "Έλεγχος κάρτας γραφικών..." "Checking the graphics card..."
@@ -72,9 +84,13 @@ if (-not $uv) {
 Write-Host "    $uv"
 
 # ---------------------------------------------------------------- python + torch
-Step "Δημιουργία περιβάλλοντος Python 3.12..." "Creating the Python 3.12 environment..."
-Run $uv @("venv", ".venv", "--python", "3.12", "--allow-existing")
 $py = Join-Path $Root ".venv\Scripts\python.exe"
+if (Test-Path $py) {
+    Step "Το περιβάλλον Python υπάρχει ήδη." "The Python environment already exists."
+} else {
+    Step "Δημιουργία περιβάλλοντος Python 3.12..." "Creating the Python 3.12 environment..."
+    Run $uv @("venv", ".venv", "--python", "3.12", "--allow-existing")
+}
 
 # An update keeps a PyTorch that already works (it is ~3 GB); a missing or broken one is installed again.
 $needCuda = if ($gpuInfo) { "1" } else { "0" }

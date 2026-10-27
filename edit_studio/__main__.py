@@ -157,6 +157,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
     try:
         _main(argv, console)
+        # Leftover threads (a download's worker pool, library threads) must never keep a closed app running
+        # unseen, holding its files: quit for real.
+        logging.shutdown()
+        os._exit(0)
     except Exception as e:
         logging.getLogger("edit_studio").exception("Edit Studio stopped with an error")
         if not console:

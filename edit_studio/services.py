@@ -45,3 +45,4 @@ class Services:
 
     def shutdown(self) -> None:
         self.jobs.stop()
+        self.hub.abort_downloads()
