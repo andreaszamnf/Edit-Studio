@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edit-studio"
+version = "0.1.0"
+description = "Τοπική εφαρμογή για δημιουργία και επεξεργασία εικόνων και βίντεο με AI μοντέλα"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    # Web server / UI
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7",
+    # AI runtime (torch is installed by the installer from the right CUDA index)
+    "torch>=2.8",
+    "torchvision>=0.23",
+    "diffusers>=0.42.0",
+    "transformers>=5.21.0",
+    "accelerate>=1.10",
+    "huggingface-hub>=1.0",
+    "safetensors>=0.5",
+    "peft>=0.17",
+    "sentencepiece>=0.2",
+    "protobuf>=5",
+    "gguf>=0.17",
+    "spandrel>=0.4.1",
+    # Media
+    "pillow>=11",
+    "numpy>=1.26",
+    "imageio-ffmpeg>=0.6",
+    # System
+    "psutil>=6",
+]
+
+[project.optional-dependencies]
+# 4-bit compression of big models (NVIDIA only)
+quant = ["bitsandbytes>=0.48; sys_platform != 'darwin'"]
+# Background removal (ONNX). The Windows installer swaps in onnxruntime-directml.
+bg = ["onnxruntime>=1.20"]
+# Native desktop window instead of the browser
+desktop = ["pywebview>=5.4"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+edit-studio = "edit_studio.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["edit_studio*"]
+
+[tool.setuptools.package-data]
+edit_studio = ["web/**/*", "configs/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
