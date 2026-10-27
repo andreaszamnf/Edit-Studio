@@ -302,8 +302,8 @@ CATALOG: list[ModelSpec] = [
         download_gb=57.7,
         components_gb={"transformer": 40.9, "text_encoder": 16.6, "vae": 0.3},
         description={
-            "el": "Κορυφαία επεξεργασία με οδηγίες («κάνε τον ουρανό ηλιοβασίλεμα»), κείμενο, συνδυασμός φωτογραφιών. Βαρύ: μοιράζεται στις 2 κάρτες με συμπίεση.",
-            "en": "Top instruction editing, text editing, multi-photo compositing. Heavy: split over both GPUs with compression.",
+            "el": "Κορυφαία επεξεργασία με οδηγίες («κάνε τον ουρανό ηλιοβασίλεμα»), κείμενο, συνδυασμός φωτογραφιών. Βαρύ: τρέχει συμπιεσμένο (4-bit) σε 16GB κάρτα.",
+            "en": "Top instruction editing, text editing, multi-photo compositing. Heavy: runs compressed (4-bit) on a 16GB card.",
         },
         defaults={"steps": 40, "guidance": 4.0},
         recommended=True,
@@ -420,8 +420,8 @@ CATALOG: list[ModelSpec] = [
         download_gb=69.0,
         components_gb={"transformer": 28.6, "transformer_2": 28.6, "text_encoder": 11.4, "vae": 0.5},
         description={
-            "el": "Κορυφαία κίνηση από φωτογραφία. Πολύ βαρύ: ένας «ειδικός» σε κάθε κάρτα, με συμπίεση.",
-            "en": "Top-quality photo animation. Very heavy: one expert per GPU, compressed.",
+            "el": "Κορυφαία κίνηση από φωτογραφία. Πολύ βαρύ: τρέχει συμπιεσμένο· με «Μοίρασμα σε 2 κάρτες» βάζει έναν «ειδικό» σε κάθε κάρτα.",
+            "en": "Top-quality photo animation. Very heavy: runs compressed; with “split over 2 cards” each card holds one expert.",
         },
         defaults={"steps": 40, "guidance": 3.5, "width": 832, "height": 480, "fps": 16, "frames": 81},
         tags=("video", "heavy"),
@@ -436,8 +436,8 @@ CATALOG: list[ModelSpec] = [
         download_gb=69.0,
         components_gb={"transformer": 28.6, "transformer_2": 28.6, "text_encoder": 11.4, "vae": 0.5},
         description={
-            "el": "Κορυφαία ποιότητα βίντεο από κείμενο. Πολύ βαρύ: ένας «ειδικός» σε κάθε κάρτα, με συμπίεση.",
-            "en": "Top-quality text-to-video. Very heavy: one expert per GPU, compressed.",
+            "el": "Κορυφαία ποιότητα βίντεο από κείμενο. Πολύ βαρύ: τρέχει συμπιεσμένο· με «Μοίρασμα σε 2 κάρτες» βάζει έναν «ειδικό» σε κάθε κάρτα.",
+            "en": "Top-quality text-to-video. Very heavy: runs compressed; with “split over 2 cards” each card holds one expert.",
         },
         defaults={"steps": 40, "guidance": 4.0, "guidance_2": 3.0, "width": 832, "height": 480, "fps": 16, "frames": 81},
         tags=("video", "heavy"),

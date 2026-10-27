@@ -47,6 +47,19 @@ WEBUI_DIRS = {
     "ControlNet": "controlnet",
     "diffusion_models": "denoiser",
 }
+STABILITY_MATRIX_DIRS = {
+    "StableDiffusion": "checkpoint",
+    "DiffusionModels": "denoiser",
+    "Unet": "denoiser",
+    "Lora": "lora",
+    "LyCORIS": "lora",
+    "VAE": "vae",
+    "TextEncoders": "text_encoder",
+    "CLIP": "text_encoder",
+    "ESRGAN": "upscaler",
+    "RealESRGAN": "upscaler",
+    "SwinIR": "upscaler",
+}
 SWARM_DIRS = {
     "Stable-Diffusion": "checkpoint",
     "diffusion_models": "denoiser",
@@ -202,7 +215,7 @@ def classify(tensors: dict, filename: str, kind_hint: str | None) -> tuple[str, 
             family = "flux1"
         elif contains("txt_mlp") or contains("img_mlp"):
             family = "qwen_image"
-        elif contains("adaLN_modulation") and contains("layers."):
+        elif (contains("adaLN_modulation") or contains(".attention.to_q") or contains("feed_forward.w")) and contains("layers."):
             family = "z_image"
         elif contains("cross_attn") and contains("blocks."):
             family = "wan"
@@ -210,7 +223,8 @@ def classify(tensors: dict, filename: str, kind_hint: str | None) -> tuple[str, 
             k = next((k for k in keys if "attn2_to_k" in k and "lora_down" in k), None)
             dim = tensors[k]["shape"][-1] if k else 0
             family = "sdxl" if dim == 2048 else "sd15" if dim == 768 else None
-        return "lora", family, "", family is not None, "" if family else "unknown_base"
+        # unknown base: still offered for every model (diffusers checks compatibility when loading it)
+        return "lora", family, "", True, "" if family else "unknown_base"
 
     # ---- full SD/SDXL checkpoints
     if has("model.diffusion_model.input_blocks.0.0.weight"):
@@ -319,6 +333,8 @@ def _layout(p: Path) -> Root | None:
         return Root(p, "A1111", WEBUI_DIRS)
     if (p / "Stable-Diffusion").is_dir() and (p / "Lora").is_dir():
         return Root(p, "SwarmUI", SWARM_DIRS)
+    if (p / "StableDiffusion").is_dir() or (p / "DiffusionModels").is_dir():
+        return Root(p, "StabilityMatrix", STABILITY_MATRIX_DIRS)
     return None
 
 
@@ -351,6 +367,9 @@ def candidate_bases() -> list[Path]:
             drive = Path(f"{letter}:\\")
             if drive.exists():
                 bases += [drive, drive / "AI", drive / "Programs", drive / "Tools", drive / "Apps"]
+        for var in ("APPDATA", "LOCALAPPDATA"):
+            if os.environ.get(var):
+                bases.append(Path(os.environ[var]))
         appdata = os.environ.get("APPDATA")
         if appdata:  # ComfyUI Desktop keeps its base path in a config file
             try:

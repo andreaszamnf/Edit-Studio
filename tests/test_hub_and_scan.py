@@ -157,3 +157,24 @@ def test_scan_comfyui_layout(tmp_path):
     # index is cached and reloaded
     again = LocalLibrary(tmp_path / "index.json")
     assert set(again.models) == set(lib.models)
+
+
+def test_scan_stability_matrix_and_forge_layouts(tmp_path):
+    sm = tmp_path / "StabilityMatrix" / "Data" / "Models"
+    (sm / "StableDiffusion").mkdir(parents=True)
+    (sm / "Lora").mkdir()
+    forge = tmp_path / "webui_forge_cu121" / "webui" / "models"
+    (forge / "Stable-diffusion").mkdir(parents=True)
+    _fake(sm / "StableDiffusion" / "pony.safetensors", {
+        "model.diffusion_model.input_blocks.0.0.weight": (320, 4, 3, 3),
+        "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.bias": (4,),
+    })
+    _fake(forge / "Stable-diffusion" / "dreamshaper.safetensors", {
+        "model.diffusion_model.input_blocks.0.0.weight": (320, 4, 3, 3),
+        "model.diffusion_model.output_blocks.11.0.skip_connection.weight": (1,),
+        "cond_stage_model.transformer.text_model.embeddings.position_embedding.weight": (77, 8),
+    })
+    lib = LocalLibrary(tmp_path / "index.json")
+    found = {m.name: m for m in lib.scan([str(sm), str(tmp_path / "webui_forge_cu121" / "webui")], auto=False)}
+    assert found["pony"].source == "StabilityMatrix" and found["pony"].family == "sdxl"
+    assert found["dreamshaper"].source == "Forge" and found["dreamshaper"].family == "sd15"

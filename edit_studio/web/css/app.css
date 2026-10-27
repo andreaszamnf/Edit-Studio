@@ -324,3 +324,4 @@ h2.section-title { font-size: 15px; margin: 22px 0 10px; display: flex; align-it
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #2c2f3b; border-radius: 6px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
+button.primary kbd { color: rgba(255, 255, 255, .85); border-color: rgba(255, 255, 255, .45); }
