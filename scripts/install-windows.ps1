@@ -76,8 +76,15 @@ Step "Δημιουργία περιβάλλοντος Python 3.12..." "Creating 
 Run $uv @("venv", ".venv", "--python", "3.12", "--allow-existing")
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 
-Step "Εγκατάσταση PyTorch για την κάρτα σου (μπορεί να πάρει λίγα λεπτά)..." "Installing PyTorch for your GPU (can take a few minutes)..."
-Run $uv @("pip", "install", "--python", $py, "torch", "torchvision", "--torch-backend=auto")
+# An update keeps a PyTorch that already works (it is ~3 GB); a missing or broken one is installed again.
+$needCuda = if ($gpuInfo) { "1" } else { "0" }
+& $py -c "import sys, importlib.util as u; ok = bool(u.find_spec('torch') and u.find_spec('torchvision')) and (sys.argv[1] == '0' or __import__('torch').cuda.is_available()); sys.exit(0 if ok else 1)" $needCuda
+if ($LASTEXITCODE -eq 0) {
+    Step "Το PyTorch είναι ήδη εγκατεστημένο και βλέπει την κάρτα: παραλείπεται." "PyTorch is already installed and working: skipped."
+} else {
+    Step "Εγκατάσταση PyTorch για την κάρτα σου (μπορεί να πάρει λίγα λεπτά)..." "Installing PyTorch for your GPU (can take a few minutes)..."
+    Run $uv @("pip", "install", "--python", $py, "torch", "torchvision", "--torch-backend=auto")
+}
 
 Step "Εγκατάσταση της εφαρμογής..." "Installing the app..."
 $extras = if ($gpuInfo) { "quant,desktop" } else { "desktop" }
