@@ -447,7 +447,7 @@ class ModelManager:
                 except Exception:
                     pass
             gguf = src.local.fmt == "gguf"  # already compressed: its file size is what it needs
-            comps.append(Component(fam.denoisers[0], size, "denoiser", fixed=gguf, shardable=not gguf and shardable(fam.denoisers[0])))
+            comps.append(Component(fam.denoisers[0], size, "denoiser", fixed=gguf, shardable=shardable(fam.denoisers[0])))
         return comps
 
     def _gpu_vram(self, gpu_ids: list[int]) -> dict[int, int]:
@@ -774,7 +774,10 @@ class ModelManager:
         status("loading:" + name)
         if local and src.local and src.local.fmt == "gguf":
             gguf = diffusers.GGUFQuantizationConfig(compute_dtype=dtype)
-            return cls.from_single_file(local, config=str(snap), subfolder=name, dtype=dtype, quantization_config=gguf, **on_gpu)
+            model = cls.from_single_file(local, config=str(snap), subfolder=name, dtype=dtype, quantization_config=gguf, **on_gpu)
+            if plan.placement.get(name) == SHARDED:
+                self._spread_loaded(model, plan)
+            return model
         if q == "nf4":
             if local:
                 qc = self._quant_config("diffusers", "nf4")
@@ -813,9 +816,7 @@ class ModelManager:
             model.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=dtype)
 
         if plan.placement.get(name) == SHARDED:
-            gpus = plan.devices[:2]
-            where = shard_split(_shard_units(model), [plan.shard[g] for g in gpus])
-            device_map = {unit: self.hw.device_for(gpus[i]) for unit, i in where.items()}
+            device_map = self._shard_map(model, plan)
         else:
             device_map = {"": self._device_of(plan, name) or "cpu"}
         # casting is much faster on a GPU: weights headed for system RAM (offload) are cast there and brought back
@@ -840,15 +841,40 @@ class ModelManager:
         if missing:
             raise ValueError(f"{len(missing)} weights missing, e.g. {sorted(missing)[:3]}")
         if plan.placement.get(name) == SHARDED:
-            with warnings.catch_warnings():  # top-level parameters are listed by name, which accelerate warns about
-                warnings.simplefilter("ignore", UserWarning)
-                accelerate.dispatch_model(
-                    model, device_map=device_map, main_device=self.hw.device_for(plan.devices[0]), force_hooks=True
-                )
-            model._es_shard = {unit: gpus[i] for unit, i in where.items()}
+            self._dispatch(model, plan, device_map)
         model.eval()
         model._es_streamed = True
         return model
+
+    def _shard_map(self, model, plan: Plan) -> dict[str, str]:
+        """Device of each top-level piece of a sharded denoiser (also kept on the model as GPU indices)."""
+        gpus = plan.devices[:2]
+        where = shard_split(_shard_units(model), [plan.shard[g] for g in gpus])
+        model._es_shard = {unit: gpus[i] for unit, i in where.items()}
+        return {unit: self.hw.device_for(gpus[i]) for unit, i in where.items()}
+
+    def _dispatch(self, model, plan: Plan, device_map: dict[str, str]) -> None:
+        """Hooks that move each block's inputs to its GPU. The weights must already be in place: accelerate moves
+        a weight by rebuilding its tensor, which GGUF's quantized tensors don't survive."""
+        import accelerate
+
+        with warnings.catch_warnings():  # top-level parameters are listed by name, which accelerate warns about
+            warnings.simplefilter("ignore", UserWarning)
+            accelerate.dispatch_model(
+                model, device_map=device_map, main_device=self.hw.device_for(plan.devices[0]), force_hooks=True
+            )
+
+    def _spread_loaded(self, model, plan: Plan) -> None:
+        """Shard a denoiser that was loaded whole into system RAM (GGUF files): move each piece, then hook."""
+        from accelerate.utils import set_module_tensor_to_device
+
+        device_map = self._shard_map(model, plan)
+        for unit, dev in device_map.items():
+            try:
+                model.get_submodule(unit).to(dev)  # Module.to keeps GGUF tensors intact
+            except AttributeError:  # a top-level parameter or buffer
+                set_module_tensor_to_device(model, unit, dev)
+        self._dispatch(model, plan, device_map)
 
     def _place(self, pipe, plan: Plan) -> None:
         from accelerate.hooks import AlignDevicesHook, add_hook_to_module

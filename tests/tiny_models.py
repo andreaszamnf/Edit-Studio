@@ -125,3 +125,23 @@ def tiny_wan_lora(folder: Path) -> Path:
     WanPipeline.save_lora_weights(folder, transformer_lora_layers=get_peft_model_state_dict(transformer),
                                   weight_name="tiny_wan_lora.safetensors")
     return folder / "tiny_wan_lora.safetensors"
+
+
+def tiny_wan_gguf(transformer, path: Path) -> Path:
+    """tiny_wan()'s transformer as a GGUF file (diffusers names), Q8_0 wherever the shape allows it."""
+    import gguf
+    import numpy as np
+
+    writer = gguf.GGUFWriter(str(path), "wan")
+    for name, tensor in transformer.state_dict().items():
+        data = tensor.detach().float().numpy()
+        if data.ndim == 2 and data.shape[-1] % 32 == 0:
+            q = gguf.quants.quantize(data, gguf.GGMLQuantizationType.Q8_0)
+            writer.add_tensor(name, q, raw_dtype=gguf.GGMLQuantizationType.Q8_0)
+        else:
+            writer.add_tensor(name, data.astype(np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path

@@ -8,7 +8,7 @@ from conftest import wait
 pytest.importorskip("torch")
 pytest.importorskip("diffusers")
 
-from tiny_models import put_in_hf_cache, tiny_sdxl, tiny_wan, tiny_wan_lora  # noqa: E402
+from tiny_models import put_in_hf_cache, tiny_sdxl, tiny_wan, tiny_wan_gguf, tiny_wan_lora  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -231,3 +231,36 @@ def test_streamed_weights_match_from_pretrained(svc):
     assert a["blocks.0.scale_shift_table"].dtype == torch.float32 and a["blocks.0.attn1.to_q.weight"].dtype == torch.bfloat16
     assert all(torch.equal(a[k], b[k]) for k in a)
     assert {k: v.dtype for k, v in ours.named_buffers()} == {k: v.dtype for k, v in theirs.named_buffers()}
+
+
+def test_gguf_denoiser_can_be_spread_over_two_gpus(svc, monkeypatch, tmp_path):
+    """GGUF weights move whole before accelerate's hooks go on, so their quantized tensors stay intact."""
+    pytest.importorskip("gguf")
+    import diffusers
+    import torch
+
+    from edit_studio.models.local import LocalModel
+    from edit_studio.models.planner import SHARDED, Plan
+
+    snap = svc.hub.snapshot("test/tiny-wan")
+    transformer = diffusers.WanTransformer3DModel.from_pretrained(str(snap), subfolder="transformer")
+    path = tiny_wan_gguf(transformer, tmp_path / "wan_tiny-Q8_0.gguf")
+    lm = LocalModel(id="local:tiny-wan-gguf", path=str(path), name="wan_tiny-Q8_0", kind="denoiser", family="wan_t2v",
+                    variant="1.3b", fmt="gguf", dtype="Q8_0", size=path.stat().st_size, mtime=0.0, source="test",
+                    supported=True, base_repo="test/tiny-wan")
+    svc.local.models[lm.id] = lm
+    mm = svc.models
+    src = mm.resolve(lm.id)
+
+    monkeypatch.setattr(mm, "plan", lambda s, slots: Plan("cpu", [0]))
+    reference = _frames(mm.acquire(src, "txt2vid", [0])[0])
+    mm.unload_all(only_idle=False)
+
+    monkeypatch.setattr(svc.hw, "device_for", lambda i: "cpu")
+    plan = Plan("shard", [1, 0], {"transformer": SHARDED, "text_encoder": 0, "vae": 1}, {}, shard={0: 10**6, 1: 10**6})
+    monkeypatch.setattr(mm, "plan", lambda s, slots: plan)
+    pipe, _ = mm.acquire(src, "txt2vid", [0, 1])
+    tr = pipe.transformer
+    assert set(tr._es_shard.values()) == {0, 1} and hasattr(tr.blocks[1], "_hf_hook")
+    assert type(tr.blocks[1].ffn.net[2].weight).__name__ == "GGUFParameter"
+    assert torch.equal(_frames(pipe), reference)

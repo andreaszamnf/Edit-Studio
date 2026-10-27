@@ -48,6 +48,7 @@ class Plan:
     est_peak: dict[int, int] = field(default_factory=dict)
     shard: dict[int, int] = field(default_factory=dict)  # shard mode: GPU -> room for denoiser layers (bytes)
     roles: dict[str, str] = field(default_factory=dict)  # component -> role, for the UI summary
+    fits: bool = True  # False: a last resort that may well run out of memory
 
     @property
     def gpus_needed(self) -> int:
@@ -73,6 +74,7 @@ class Plan:
             "main_quant": worst("denoiser"),  # the big model's compression
             "text_quant": worst("text_encoder"),
             "gpus_needed": self.gpus_needed,
+            "fits": self.fits,
             "cpu_parts": [k for k, v in self.placement.items() if v == CPU],
             "peak_gb": {str(k): round(v / GB, 1) for k, v in self.est_peak.items()},
         }
@@ -180,7 +182,7 @@ def _try_split(comps, quant, vram, act, ram) -> Plan | None:
 def _try_shard(comps, quant, vram, act, ram) -> Plan | None:
     """The denoiser's layers over the two GPUs with the most memory; each of them runs some layers."""
     dens = [c for c in comps if c.role == "denoiser"]
-    if len(vram) < 2 or len(dens) != 1 or not dens[0].shardable or dens[0].fixed or quant.get(dens[0].name) == "nf4":
+    if len(vram) < 2 or len(dens) != 1 or not dens[0].shardable or quant.get(dens[0].name) == "nf4":
         return None
     den = dens[0]
     quant = dict(quant)
@@ -252,7 +254,7 @@ def _speed(plan: Plan) -> int:
 def choose(single: Plan, multi: Plan | None, comps, mode_pref: str, kind: str) -> str:
     if multi is None or mode_pref in ("single", "offload", "lowvram"):
         return "single"
-    if mode_pref == "split" or single.mode == "sequential":
+    if mode_pref == "split" or single.mode == "sequential" or not single.fits:
         return "required"
     qm, qs = _quality(multi, comps), _quality(single, comps)
     if qm < qs:
@@ -296,7 +298,7 @@ def plan_options(
     if single is None:
         best_gpu = max(vram, key=vram.get)
         mode = "offload" if _no_sequential(comps) else "sequential"
-        single = Plan(mode, [best_gpu], {}, {} if mode_pref == "lowvram" else dict(levels[-1]))
+        single = Plan(mode, [best_gpu], {}, {} if mode_pref == "lowvram" else dict(levels[-1]), fits=mode == "sequential")
 
     multi = None
     if len(vram) >= 2 and mode_pref in ("auto", "split"):
@@ -325,4 +327,4 @@ def sequential_plan(device: int, comps: list[Component], can_nf4: bool) -> Plan:
     """Last resort after repeated out-of-memory errors."""
     quant = {c.name: "nf4" for c in comps if c.role in ("denoiser", "text_encoder") and not c.fixed} if can_nf4 else {}
     mode = "offload" if _no_sequential(comps) else "sequential"
-    return Plan(mode, [device], {}, quant, roles={c.name: c.role for c in comps if not c.fixed})
+    return Plan(mode, [device], {}, quant, roles={c.name: c.role for c in comps if not c.fixed}, fits=mode == "sequential")

@@ -12,6 +12,7 @@ export function planParts(plan) {
   if (q === "nf4") parts.push(t("plan.nf4"));
   else if (q === "fp8") parts.push(t("plan.fp8"));
   if ((plan.cpu_parts || []).length) parts.push(t("plan.cpu_text"));
+  if (plan.fits === false) parts.push(t("plan.tight"));
   if (plan.gpus && plan.gpus[0] === 1 && plan.gpus[1] > 1) parts.push(t("plan.or_one"));
   return parts;
 }
