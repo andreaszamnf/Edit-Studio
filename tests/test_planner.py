@@ -151,3 +151,14 @@ def test_shard_split_never_cuts_small_stacks_that_feed_root_code():
     flux = [("embed", 10, None)] + [(f"double.{i}", 100, "double") for i in range(4)] + [(f"single.{i}", 40, "single") for i in range(6)]
     cut = shard_split(flux, [600, 100])
     assert cut["single.2"] == 0 and cut["single.5"] == 1
+
+
+def test_gguf_never_gets_the_layer_streaming_mode():
+    """accelerate can't rebuild GGUF tensors when streaming layer by layer (KeyError: None): model offload instead."""
+    from edit_studio.models.planner import sequential_plan
+
+    c = [Component("transformer", int(12.2 * GB), "denoiser", fixed=True, shardable=False),
+         Component("text_encoder", int(16.6 * GB), "text_encoder"), Component("vae", int(0.3 * GB), "vae")]
+    o = plan_options(c, {1: int(13 * GB)}, 32 * GB, int(2.5 * GB), can_nf4=False)
+    assert o.single.mode == "offload"
+    assert sequential_plan(1, c, can_nf4=True).mode == "offload"

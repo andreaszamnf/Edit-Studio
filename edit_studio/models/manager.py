@@ -191,6 +191,10 @@ def _is_quantized(module) -> bool:
     return bool(getattr(module, "is_quantized", False) or getattr(module, "hf_quantizer", None) is not None)
 
 
+def _is_gguf(module) -> bool:
+    return type(getattr(module, "hf_quantizer", None)).__name__.startswith("GGUF")
+
+
 class StreamLoadError(Exception):
     """The streaming loader could not build this model (unusual layout); the classic loader takes over."""
 
@@ -856,7 +860,10 @@ class ModelManager:
         elif plan.mode == "offload":
             pipe.enable_model_cpu_offload(device=main)
         elif plan.mode == "sequential":
-            pipe.enable_sequential_cpu_offload(device=main)
+            if any(_is_gguf(m) for m in pipe.components.values()):
+                pipe.enable_model_cpu_offload(device=main)  # GGUF can't be streamed layer by layer
+            else:
+                pipe.enable_sequential_cpu_offload(device=main)
         elif plan.mode in ("split", "shard"):
             for name, module in pipe.components.items():
                 if not isinstance(module, torch.nn.Module):

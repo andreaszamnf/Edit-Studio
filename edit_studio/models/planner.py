@@ -295,7 +295,8 @@ def plan_options(
                 break
     if single is None:
         best_gpu = max(vram, key=vram.get)
-        single = Plan("sequential", [best_gpu], {}, {} if mode_pref == "lowvram" else dict(levels[-1]))
+        mode = "offload" if _no_sequential(comps) else "sequential"
+        single = Plan(mode, [best_gpu], {}, {} if mode_pref == "lowvram" else dict(levels[-1]))
 
     multi = None
     if len(vram) >= 2 and mode_pref in ("auto", "split"):
@@ -314,7 +315,14 @@ def make_plan(comps: list[Component], vram: dict[int, int], ram: int, activation
     return plan_options(comps, vram, ram, activation, **kw).for_gpus(len(vram))
 
 
+def _no_sequential(comps: list[Component]) -> bool:
+    """GGUF weights can't be streamed in layer by layer (accelerate can't rebuild their quantized tensors):
+    for them the last resort is model offload."""
+    return any(c.fixed for c in comps if c.role == "denoiser")
+
+
 def sequential_plan(device: int, comps: list[Component], can_nf4: bool) -> Plan:
     """Last resort after repeated out-of-memory errors."""
     quant = {c.name: "nf4" for c in comps if c.role in ("denoiser", "text_encoder") and not c.fixed} if can_nf4 else {}
-    return Plan("sequential", [device], {}, quant, roles={c.name: c.role for c in comps if not c.fixed})
+    mode = "offload" if _no_sequential(comps) else "sequential"
+    return Plan(mode, [device], {}, quant, roles={c.name: c.role for c in comps if not c.fixed})
