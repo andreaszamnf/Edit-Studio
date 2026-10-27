@@ -116,6 +116,70 @@ def resolve_loras(ctx: TaskContext, src: ModelSource, loras: list[LoraRef]) -> l
     return out
 
 
+def _tensors(out, limit: int = 64):
+    """The tensors in a module's output (model outputs, tuples, lists), at most `limit` of them."""
+    import torch
+
+    found, todo = [], [out]
+    while todo and len(found) < limit:
+        x = todo.pop()
+        if isinstance(x, torch.Tensor):
+            found.append(x)
+        elif isinstance(x, dict):
+            todo += list(x.values())
+        elif isinstance(x, (list, tuple)):
+            todo += list(x)
+        elif hasattr(x, "to_tuple"):  # transformers / diffusers ModelOutput
+            todo += list(x.to_tuple())
+    return found
+
+
+class _NanWatch:
+    """Notes the first pipeline part whose output holds NaN/inf (it would end as a black image)."""
+
+    def __init__(self, pipe):
+        import torch
+
+        self.bad: str | None = None
+        self.handles = []
+        self.wrapped = []
+        for name, module in getattr(pipe, "components", {}).items():
+            if isinstance(module, torch.nn.Module):
+                self.handles.append(module.register_forward_hook(self._hook(name)))
+                if callable(getattr(module, "decode", None)):  # VAEs are called through decode(), not forward()
+                    self._wrap_decode(name, module)
+
+    def _wrap_decode(self, name: str, module) -> None:
+        original = module.decode
+        check = self._hook(name)
+
+        def decode(*args, **kwargs):
+            out = original(*args, **kwargs)
+            check(module, args, out)
+            return out
+
+        module.decode = decode
+        self.wrapped.append(module)
+
+    def _hook(self, name: str):
+        import torch
+
+        def check(_module, _args, out):
+            if self.bad is None:
+                for t in _tensors(out):
+                    if t.is_floating_point() and not bool(torch.isfinite(t).all()):
+                        self.bad = name
+                        break
+
+        return check
+
+    def close(self) -> None:
+        for h in self.handles:
+            h.remove()
+        for module in self.wrapped:
+            del module.decode  # back to the class method
+
+
 def run_pipeline(ctx: TaskContext, src: ModelSource, task: str, call, loras: list[tuple[str, float]] | None = None):
     """Acquires the pipeline and runs `call(pipe)`; on out-of-memory retries once with a safer plan."""
     import torch
@@ -126,9 +190,14 @@ def run_pipeline(ctx: TaskContext, src: ModelSource, task: str, call, loras: lis
         pipe, plan = models.acquire(src, task, ctx.slots, loras, ctx.status)
         if ctx.services.hw.backend == "cuda" and plan.devices and torch.cuda.is_available():
             torch.cuda.set_device(plan.devices[0])
+        watch = _NanWatch(pipe)
         try:
             with torch.inference_mode():
-                return call(pipe)
+                result = call(pipe)
+            if watch.bad:
+                log.error("Non-finite output from %s of %s with plan %s", watch.bad, src.id, plan.key)
+                raise TaskError("nan_output", component=watch.bad, model=src.name)
+            return result
         except torch.OutOfMemoryError:
             log.warning("OOM while running %s (attempt %d)", src.id, attempt + 1)
             del pipe
@@ -137,6 +206,8 @@ def run_pipeline(ctx: TaskContext, src: ModelSource, task: str, call, loras: lis
             ctx.progress(stage="fallback")
         except Cancelled:
             raise
+        finally:
+            watch.close()
     raise ModelError("oom")
 
 

@@ -277,6 +277,7 @@ const el = {
   "task.tool.download": "Λήψη εργαλείου",
   "task.models.scan": "Αναζήτηση μοντέλων",
 
+  "err.nan_output": "Το «{component}» έβγαλε άκυρους αριθμούς (NaN), οπότε η εικόνα θα ήταν μαύρη. Στείλε αυτό το μήνυμα για διόρθωση· στο μεταξύ δοκίμασε άλλο μοντέλο ή Ρυθμίσεις → Συμπίεση.",
   "err.oom": "Δεν έφτασε η μνήμη της κάρτας γραφικών. Δοκίμασε μικρότερο μέγεθος/διάρκεια ή στις Ρυθμίσεις → Συμπίεση «4-bit».",
   "err.gated": "Το μοντέλο χρειάζεται αποδοχή άδειας στο huggingface.co και token στις Ρυθμίσεις.",
   "err.network": "Πρόβλημα σύνδεσης στο internet. Έλεγξε τη σύνδεση και ξαναδοκίμασε.",
@@ -487,6 +488,7 @@ const en = {
   "task.video.remove_bg": "Video background", "task.video.interpolate": "Smooth motion", "task.video.transform": "Cut / speed",
   "task.video.to_gif": "GIF", "task.video.extract_frame": "Frame from video", "task.video.concat": "Join videos",
   "task.model.download": "Model download", "task.tool.download": "Tool download", "task.models.scan": "Model search",
+  "err.nan_output": "“{component}” produced invalid numbers (NaN), so the image would be black. Please report this message; meanwhile try another model or Settings → Compression.",
   "err.oom": "The graphics card ran out of memory. Try a smaller size/duration or Settings → Compression “4-bit”.",
   "err.gated": "This model requires accepting its license on huggingface.co and a token in Settings.",
   "err.network": "Internet connection problem. Check your connection and retry.", "err.not_found": "Model not found on Hugging Face.",

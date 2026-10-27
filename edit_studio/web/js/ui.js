@@ -40,8 +40,8 @@ export function toast(message, kind = "", ms = 4500) {
 export function errorText(err) {
   if (!err) return t("err.error");
   const key = err.key || err.error_key || "error";
-  const known = t(`err.${key}`);
   const info = err.info || (err.body && err.body.info) || {};
+  const known = t(`err.${key}`, info);
   if (known !== `err.${key}`) {
     if (key === "invalid_params" && err.body && err.body.details) {
       return known + " " + err.body.details.map((d) => `${(d.loc || []).join(".")}: ${d.msg}`).join("; ");

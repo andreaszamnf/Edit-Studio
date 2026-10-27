@@ -264,3 +264,17 @@ def test_gguf_denoiser_can_be_spread_over_two_gpus(svc, monkeypatch, tmp_path):
     assert set(tr._es_shard.values()) == {0, 1} and hasattr(tr.blocks[1], "_hf_hook")
     assert type(tr.blocks[1].ffn.net[2].weight).__name__ == "GGUFParameter"
     assert torch.equal(_frames(pipe), reference)
+
+
+def test_non_finite_output_fails_with_the_part_named(svc):
+    """NaN anywhere would end as a black image: the job fails and says which part produced it."""
+    pipe, _ = svc.models.acquire(svc.models.resolve("hf:test/tiny-sdxl"), "txt2img", [0])
+    handle = pipe.unet.register_forward_hook(lambda module, args, out: (out[0] * float("nan"),) + tuple(out[1:]))
+    try:
+        job = wait(svc.jobs.submit("image.generate", {"model": "hf:test/tiny-sdxl", "prompt": "a cat", "width": 64,
+                                                      "height": 64, "steps": 2}))
+    finally:
+        handle.remove()
+    assert job.status == "failed" and job.error_key == "nan_output" and job.error_info["component"] == "unet"
+    assert not hasattr(pipe.vae, "decode") or "decode" not in vars(pipe.vae)  # wrapper removed again
+    run(svc, "image.generate", {"model": "hf:test/tiny-sdxl", "prompt": "a cat", "width": 64, "height": 64, "steps": 2})

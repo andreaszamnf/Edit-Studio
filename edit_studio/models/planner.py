@@ -130,7 +130,7 @@ def _try_offload(comps, quant, vram, act, ram) -> Plan | None:
     return None
 
 
-def _try_split(comps, quant, vram, act, ram) -> Plan | None:
+def _try_split(comps, quant, vram, act, ram, cpu_ok=True) -> Plan | None:
     if len(vram) < 2:
         return None
     quant = dict(quant)
@@ -167,7 +167,7 @@ def _try_split(comps, quant, vram, act, ram) -> Plan | None:
                 break
         else:
             # A text encoder runs once per prompt, so it may stay on the CPU (uncompressed).
-            if c.role == "text_encoder" and c.bytes < ram * TE_ON_CPU_RAM:
+            if c.role == "text_encoder" and cpu_ok and c.bytes < ram * TE_ON_CPU_RAM:
                 placement[c.name] = CPU
                 quant.pop(c.name, None)
                 continue
@@ -179,7 +179,7 @@ def _try_split(comps, quant, vram, act, ram) -> Plan | None:
     return Plan("split", used, placement, quant, {g: vram[g] - SAFETY - room[g] for g in used})
 
 
-def _try_shard(comps, quant, vram, act, ram) -> Plan | None:
+def _try_shard(comps, quant, vram, act, ram, cpu_ok=True) -> Plan | None:
     """The denoiser's layers over the two GPUs with the most memory; each of them runs some layers."""
     dens = [c for c in comps if c.role == "denoiser"]
     if len(vram) < 2 or len(dens) != 1 or not dens[0].shardable or quant.get(dens[0].name) == "nf4":
@@ -202,7 +202,7 @@ def _try_shard(comps, quant, vram, act, ram) -> Plan | None:
         if size <= room[g] and sum(room.values()) - size >= need + margin:
             placement[c.name] = g
             room[g] -= size
-        elif c.role == "text_encoder" and c.bytes < ram * TE_ON_CPU_RAM:
+        elif c.role == "text_encoder" and cpu_ok and c.bytes < ram * TE_ON_CPU_RAM:
             placement[c.name] = CPU
             quant.pop(c.name, None)
         else:
@@ -303,7 +303,11 @@ def plan_options(
     multi = None
     if len(vram) >= 2 and mode_pref in ("auto", "split"):
         for quant in levels:
-            multi = _try_split(comps, quant, vram, activation, ram) or _try_shard(comps, quant, vram, activation, ram)
+            # A text encoder goes to the CPU only once 4-bit on a GPU isn't possible: on the GPU it is much
+            # faster, and some (Qwen2.5-VL) are unreliable computing in bf16 on a CPU.
+            cpu_ok = not can_nf4 or all(quant.get(c.name) == "nf4" for c in comps if c.role == "text_encoder")
+            multi = (_try_split(comps, quant, vram, activation, ram, cpu_ok)
+                     or _try_shard(comps, quant, vram, activation, ram, cpu_ok))
             if multi:
                 break
     for p in (single, multi):
