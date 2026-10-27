@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import logging.handlers
 import os
@@ -56,6 +57,50 @@ def _running_instance(home: Path, start: int) -> str | None:
     return None
 
 
+ICON = Path(__file__).parent / "web" / "img" / "icon.ico"
+
+
+def _windows_app_id() -> None:
+    """Own taskbar identity: without it Windows groups the window under pythonw.exe and shows Python's icon."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EditStudio.App")
+    except Exception:
+        pass
+
+
+def _set_window_icon(window) -> None:
+    """pywebview's Windows backend uses the icon of python's executable; put ours on the window instead."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.FindWindowW.restype = wintypes.HWND
+        try:
+            hwnd = int(window.native.Handle.ToInt64())
+        except Exception:
+            hwnd = user32.FindWindowW(None, "Edit Studio")
+        if not hwnd:
+            return
+        # ICON_BIG (taskbar, Alt+Tab) and ICON_SMALL (title bar), at the sizes this screen's scaling asks for
+        for which, metric in ((1, 11), (0, 49)):  # SM_CXICON, SM_CXSMICON
+            size = max(16, user32.GetSystemMetrics(metric))
+            if which == 1:
+                size = max(size, 48)  # the taskbar of scaled screens shows the big icon larger than 32 px
+            icon = user32.LoadImageW(None, str(ICON), 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+            if icon:
+                user32.SendMessageW(hwnd, 0x80, which, icon)  # WM_SETICON
+    except Exception as e:
+        logging.getLogger("edit_studio").info("Could not set the window icon: %s", e)
+
+
 def _open_window(url: str, paths) -> bool:
     """Native window (WebView2 on Windows). Returns False when unavailable, so the caller can use the browser."""
     try:
@@ -65,10 +110,13 @@ def _open_window(url: str, paths) -> bool:
         return False
     if hasattr(webview, "settings"):
         webview.settings["ALLOW_DOWNLOADS"] = True
-    webview.create_window("Edit Studio", url, width=1480, height=940, min_size=(1024, 700))
+    window = webview.create_window("Edit Studio", url, width=1480, height=940, min_size=(1024, 700))
     kwargs = {"private_mode": False, "storage_path": str(paths.cache / "webview")}  # keep language / form choices
     if sys.platform == "win32":
         kwargs["gui"] = "edgechromium"  # never the old Internet Explorer engine
+        window.events.shown += lambda: _set_window_icon(window)
+    elif "icon" in inspect.signature(webview.start).parameters:  # GTK / Qt
+        kwargs["icon"] = str(ICON.with_suffix(".png"))
     try:
         webview.start(**kwargs)
     except Exception as e:
@@ -104,6 +152,7 @@ def _error_box(text: str) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     console = sys.stdout is not None and sys.stderr is not None
+    _windows_app_id()  # before any window exists
     if not console:  # pythonw.exe (the desktop shortcut) has no console; printing must not crash anything
         sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
     try:
