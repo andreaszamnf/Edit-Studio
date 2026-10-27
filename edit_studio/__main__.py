@@ -14,15 +14,18 @@ import webbrowser
 from pathlib import Path
 
 DEFAULT_PORT = 8765
+_log_file: Path | None = None
 
 
-def _setup_logging(home: Path, verbose: bool) -> None:
+def _setup_logging(home: Path, verbose: bool, console: bool) -> None:
+    global _log_file
     logs = home / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    _log_file = logs / "edit-studio.log"
     handlers: list[logging.Handler] = [
-        logging.handlers.RotatingFileHandler(logs / "edit-studio.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        logging.handlers.RotatingFileHandler(_log_file, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
     ]
-    if sys.stderr is not None:  # pythonw has no console
+    if console:
         handlers.append(logging.StreamHandler())
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -87,7 +90,36 @@ def _free_port(host: str, start: int) -> int:
     raise SystemExit("No free port found")
 
 
+def _error_box(text: str) -> None:
+    """Started without a console (desktop shortcut), a failure would be invisible: show it in a message box."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, text, "Edit Studio", 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> None:
+    console = sys.stdout is not None and sys.stderr is not None
+    if not console:  # pythonw.exe (the desktop shortcut) has no console; printing must not crash anything
+        sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    try:
+        _main(argv, console)
+    except Exception as e:
+        logging.getLogger("edit_studio").exception("Edit Studio stopped with an error")
+        if not console:
+            _error_box(
+                "Το Edit Studio δεν μπόρεσε να ξεκινήσει.\nEdit Studio could not start.\n\n"
+                f"{type(e).__name__}: {e}\n\n"
+                f"{_log_file or ''}\n(Τρέξε το EditStudio.bat για λεπτομέρειες / run EditStudio.bat for details)"
+            )
+        raise
+
+
+def _main(argv: list[str] | None, console: bool) -> None:
     parser = argparse.ArgumentParser(prog="edit-studio", description="Edit Studio - AI images & video")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--listen", action="store_true", help="allow other devices on your network (no protection!)")
@@ -114,7 +146,9 @@ def main(argv: list[str] | None = None) -> None:
 
     paths = Paths(args.data)
     paths.ensure()
-    _setup_logging(paths.home, args.verbose)
+    _setup_logging(paths.home, args.verbose, console)
+    if not console:  # tracebacks from worker threads, library warnings
+        sys.stdout = sys.stderr = open(paths.home / "logs" / "console.log", "a", encoding="utf-8", buffering=1)
     log = logging.getLogger("edit_studio")
 
     existing = None if args.listen else _running_instance(paths.home, args.port)
@@ -142,9 +176,11 @@ def main(argv: list[str] | None = None) -> None:
     port = _free_port(host, args.port)
     url = f"http://127.0.0.1:{port}/"
     app = create_app(services, allow_remote=args.listen)
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False))
+    # log_config=None: uvicorn's own console formatter crashes without a console (pythonw); ours logs to the file
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False, log_config=None))
 
-    print(f"\n  Edit Studio: {url}\n  (κλείσε αυτό το παράθυρο για τερματισμό / close this window to quit)\n", flush=True)
+    if console:
+        print(f"\n  Edit Studio: {url}\n  (κλείσε αυτό το παράθυρο για τερματισμό / close this window to quit)\n", flush=True)
     try:
         if args.browser or args.no_open:
             if not args.no_open:

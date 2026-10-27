@@ -2,6 +2,7 @@
 # Installs uv, Python 3.12, PyTorch for your graphics card and the app, then creates shortcuts.
 
 $ErrorActionPreference = "Stop"
+$env:UV_LINK_MODE = "copy"  # cache and app on different drives: copying is expected, not a problem
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
