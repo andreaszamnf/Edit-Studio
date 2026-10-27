@@ -56,10 +56,11 @@ export function sizeFor(aspect, megapixels, multiple = 16) {
   return [w, hh];
 }
 
-export function aspectPicker(state, onChange) {
+/** Aspect ratio + size presets; `getBase` gives the model's native megapixels (SD 1.5 ≈ 0.25, Qwen ≈ 1.7). */
+export function aspectPicker(state, onChange, getBase = () => 1) {
   const info = h("span", { class: "hint" });
   const update = () => {
-    const [w, hh] = sizeFor(state.aspect, state.mp);
+    const [w, hh] = sizeFor(state.aspect, Math.min(4, state.mp * getBase()));
     info.textContent = `${w} × ${hh}`;
     onChange && onChange(w, hh);
   };
@@ -69,6 +70,7 @@ export function aspectPicker(state, onChange) {
     info,
   );
   update();
+  el.refresh = update;
   return el;
 }
 

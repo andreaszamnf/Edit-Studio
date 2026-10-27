@@ -62,7 +62,7 @@ export function maskCanvas({ onChange } = {}) {
     if (!img) return;
     const maxW = Math.max(200, stage.clientWidth - 2);
     const maxH = Math.max(240, window.innerHeight * 0.62);
-    const s = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
+    const s = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 8);
     view.width = Math.round(img.naturalWidth * s);
     view.height = Math.round(img.naturalHeight * s);
     redraw();

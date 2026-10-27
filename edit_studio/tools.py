@@ -47,7 +47,11 @@ class BackgroundRemover:
 
         opts = ort.SessionOptions()
         opts.log_severity_level = 3
-        self.session = ort.InferenceSession(str(model_path), sess_options=opts, providers=_ort_providers())
+        providers = _ort_providers()
+        if "DmlExecutionProvider" in providers:
+            opts.enable_mem_pattern = False
+            opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        self.session = ort.InferenceSession(str(model_path), sess_options=opts, providers=providers)
         self.mean, self.std, self.sigmoid = BG_PREPROCESS[kind]
         self.input_name = self.session.get_inputs()[0].name
 

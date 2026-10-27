@@ -16,7 +16,7 @@ let source = null; // kept while the app is open
 
 export function editPage(root) {
   const state = remember("edit", {
-    tool: "instruct", editModel: "qwen-image-edit-2511", inpaintModel: "z-image-turbo", varModel: "z-image-turbo",
+    tool: "instruct", editModel: "", inpaintModel: "", varModel: "",
     prompt: "", inpaintPrompt: "", outPrompt: "", varPrompt: "", strength: null, varStrength: 0.6, count: 1,
     steps: null, guidance: null, seed: -1, gpu: null, loras: [], bgModel: "birefnet", bgMode: "transparent",
     bgColor: "#ffffff", upModel: "realesrgan-x4", upScale: 2, left: 0, right: 0, top: 0, bottom: 0, grow: 6, feather: 10,

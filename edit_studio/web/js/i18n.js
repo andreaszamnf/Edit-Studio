@@ -145,6 +145,8 @@ const el = {
   "video.prompt_ph": "Περίγραψε τη σκηνή και την κίνηση… π.χ. «η κάμερα κινείται αργά πάνω από ένα ελαιόδασος, χρυσό φως, ο αέρας κουνάει τα φύλλα»",
   "video.i2v_ph": "Τι να κινηθεί και πώς; π.χ. «τα μαλλιά της κυματίζουν, χαμογελάει, η κάμερα πλησιάζει αργά»",
   "video.button": "Δημιουργία βίντεο",
+  "video.res_high": "Κανονική (720p)",
+  "video.res_low": "Γρήγορη (480p)",
   "video.time_note": "Ένα βίντεο 5″ μπορεί να χρειαστεί από λίγα λεπτά έως 20+ λεπτά, ανάλογα με το μοντέλο.",
 
   "vedit.title": "Επεξεργασία βίντεο",
@@ -422,7 +424,7 @@ const en = {
   "video.start_image": "Start image",
   "video.prompt_ph": "Describe the scene and the motion… e.g. “the camera glides over an olive grove, golden light, wind moves the leaves”",
   "video.i2v_ph": "What moves and how? e.g. “her hair waves, she smiles, the camera slowly pushes in”",
-  "video.button": "Create video", "video.time_note": "A 5-second clip can take from a few minutes to 20+ minutes depending on the model.",
+  "video.button": "Create video", "video.res_high": "Standard (720p)", "video.res_low": "Fast (480p)", "video.time_note": "A 5-second clip can take from a few minutes to 20+ minutes depending on the model.",
   "vedit.title": "Edit video", "vedit.source": "Video", "vedit.tab.cut": "Cut & speed", "vedit.tab.restyle": "Restyle (AI)",
   "vedit.tab.extend": "Continue (AI)", "vedit.tab.upscale": "Upscale (AI)", "vedit.tab.background": "Background (AI)",
   "vedit.tab.smooth": "Smooth motion", "vedit.tab.gif": "GIF", "vedit.tab.frame": "Frame → image", "vedit.tab.join": "Join",

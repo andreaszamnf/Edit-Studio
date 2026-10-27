@@ -153,6 +153,13 @@ class HubClient:
     ) -> Path:
         files = self.remote_files(repo, variant, skip_weights)
         total = sum(s for _, s in files)
+        snap = self.snapshot(repo)
+        missing = sum(s for name, s in files if not (snap and (snap / name).exists()))
+        root = cache_root(self.cache_fn())
+        root.mkdir(parents=True, exist_ok=True)
+        free = shutil.disk_usage(root).free
+        if missing > free - 2 * 1024**3:
+            raise OSError(28, f"No space left on device: need {missing / 1e9:.1f} GB, free {free / 1e9:.1f} GB")
         cls = type("_BoundProgress", (_ProgressTqdm,), {})
         cls.callback = staticmethod(lambda n, t: progress(n, max(t, total)))
         cls.cancel_event = cancel_event

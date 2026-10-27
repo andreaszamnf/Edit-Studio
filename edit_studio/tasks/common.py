@@ -123,7 +123,9 @@ def run_pipeline(ctx: TaskContext, src: ModelSource, task: str, call, loras: lis
     models = ctx.services.models
     for attempt in range(2):
         ctx.check()
-        pipe, _plan = models.acquire(src, task, ctx.slots, loras, ctx.status)
+        pipe, plan = models.acquire(src, task, ctx.slots, loras, ctx.status)
+        if ctx.services.hw.backend == "cuda" and plan.devices and torch.cuda.is_available():
+            torch.cuda.set_device(plan.devices[0])
         try:
             with torch.inference_mode():
                 return call(pipe)

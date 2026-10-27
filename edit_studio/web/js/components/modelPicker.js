@@ -65,7 +65,10 @@ export function modelPicker(task, value, onChange) {
     if (!all.find((m) => m.id === current) && all.length) {
       // keep the user's choice if models are still loading; otherwise pick the first recommended
       if (store.models) {
-        current = (catalog.find((m) => m.installed && m.recommended) || catalog.find((m) => m.installed) || yours[0] || catalog.find((m) => m.recommended) || all[0]).id;
+        // prefer something already on disk, then the lightest recommended download
+        const ready = yours.find((m) => !(m.needs && m.needs.length));
+        current = (catalog.find((m) => m.installed && m.recommended) || catalog.find((m) => m.installed) || ready
+          || yours[0] || catalog.find((m) => m.recommended) || all[0]).id;
         setTimeout(() => onChange(current, findModel(current)), 0);
       }
     }

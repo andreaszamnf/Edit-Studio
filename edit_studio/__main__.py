@@ -35,9 +35,50 @@ def _setup_logging(home: Path, verbose: bool) -> None:
         logging.getLogger(chatty).setLevel(logging.ERROR)
 
 
+def _running_instance(home: Path, start: int) -> str | None:
+    """URL of an Edit Studio that already serves this data folder (opening the app twice shares one server)."""
+    import json
+    import urllib.request
+
+    for port in range(start, start + 10):
+        url = f"http://127.0.0.1:{port}/"
+        try:
+            req = urllib.request.Request(url + "api/system", headers={"Host": f"127.0.0.1:{port}"})
+            with urllib.request.urlopen(req, timeout=0.5) as r:
+                info = json.loads(r.read())
+        except Exception:
+            continue
+        if Path(info.get("data_dir", "")).resolve() == home.resolve():
+            return url
+    return None
+
+
+def _open_window(url: str, paths) -> bool:
+    """Native window (WebView2 on Windows). Returns False when unavailable, so the caller can use the browser."""
+    try:
+        import webview  # pywebview
+    except Exception as e:
+        logging.getLogger("edit_studio").info("Desktop window unavailable (%s); using the browser", e)
+        return False
+    if hasattr(webview, "settings"):
+        webview.settings["ALLOW_DOWNLOADS"] = True
+    webview.create_window("Edit Studio", url, width=1480, height=940, min_size=(1024, 700))
+    kwargs = {"private_mode": False, "storage_path": str(paths.cache / "webview")}  # keep language / form choices
+    if sys.platform == "win32":
+        kwargs["gui"] = "edgechromium"  # never the old Internet Explorer engine
+    try:
+        webview.start(**kwargs)
+    except Exception as e:
+        logging.getLogger("edit_studio").warning("Desktop window failed (%s); using the browser", e)
+        return False
+    return True
+
+
 def _free_port(host: str, start: int) -> int:
     for port in range(start, start + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if sys.platform != "win32":  # like uvicorn: a just-closed port (TIME_WAIT) is reusable
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind((host if host != "0.0.0.0" else "", port))
                 return port
@@ -76,6 +117,15 @@ def main(argv: list[str] | None = None) -> None:
     _setup_logging(paths.home, args.verbose)
     log = logging.getLogger("edit_studio")
 
+    existing = None if args.listen else _running_instance(paths.home, args.port)
+    if existing:
+        log.info("Edit Studio is already running at %s", existing)
+        if args.no_open:
+            return
+        if args.browser or not _open_window(existing, paths):
+            webbrowser.open(existing)
+        return
+
     import uvicorn
 
     from .app import create_app
@@ -94,30 +144,23 @@ def main(argv: list[str] | None = None) -> None:
     app = create_app(services, allow_remote=args.listen)
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False))
 
-    window = None
-    if not args.browser and not args.no_open:
-        try:
-            import webview  # pywebview
-
-            window = webview
-        except Exception as e:
-            log.info("Desktop window unavailable (%s); using the browser", e)
-
     print(f"\n  Edit Studio: {url}\n  (κλείσε αυτό το παράθυρο για τερματισμό / close this window to quit)\n", flush=True)
     try:
-        if window is not None:
-            t = threading.Thread(target=server.run, daemon=True)
-            t.start()
-            while not server.started and t.is_alive():
-                time.sleep(0.05)
-            window.create_window("Edit Studio", url, width=1480, height=940, min_size=(1024, 700))
-            window.start()
-            server.should_exit = True
-            t.join(timeout=5)
-        else:
+        if args.browser or args.no_open:
             if not args.no_open:
                 threading.Timer(1.0, lambda: webbrowser.open(url)).start()
             server.run()
+            return
+        t = threading.Thread(target=server.run, daemon=True)
+        t.start()
+        while not server.started and t.is_alive():
+            time.sleep(0.05)
+        if _open_window(url, paths):
+            server.should_exit = True  # window closed: quit
+            t.join(timeout=5)
+        else:
+            webbrowser.open(url)
+            t.join()
     finally:
         services.shutdown()
         log.info("Edit Studio stopped")

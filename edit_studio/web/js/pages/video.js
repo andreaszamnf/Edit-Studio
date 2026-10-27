@@ -11,8 +11,8 @@ let startImage = null;
 
 export function videoPage(root) {
   const state = remember("video", {
-    mode: "text", t2vModel: "wan2.2-ti2v-5b", i2vModel: "wan2.2-ti2v-5b", prompt: "", negative_prompt: "",
-    orientation: "landscape", seconds: 5, quality: "normal", steps: null, guidance: null, seed: -1, gpu: null,
+    mode: "text", t2vModel: "", i2vModel: "", prompt: "", negative_prompt: "",
+    orientation: "landscape", seconds: 5, quality: "normal", res: "high", steps: null, guidance: null, seed: -1, gpu: null,
   });
   const intent = takeIntent("video");
   if (intent && intent.image) { startImage = intent.image; state.mode = "image"; }
@@ -50,8 +50,9 @@ export function videoPage(root) {
       const d = (m && m.defaults) || {};
       const fps = d.fps || 16;
       let w = d.width || 832, hh = d.height || 480;
+      if (state.res === "low" && hh >= 704) { w = Math.round((w * 0.65) / 32) * 32; hh = Math.round((hh * 0.65) / 32) * 32; }
       if (!isImage && state.orientation === "portrait") [w, hh] = [hh, w];
-      if (isImage) { w = 0; hh = 0; } // follow the photo's orientation
+      if (isImage && state.res !== "low") { w = 0; hh = 0; } // the server matches the photo's orientation
       const frames = Math.round(state.seconds * fps) + 1;
       const base = d.steps || 30;
       const steps = state.steps || (state.quality === "fast" ? Math.max(10, Math.round(base * 0.6)) : state.quality === "best" ? Math.round(base * 1.25) : base);
@@ -74,6 +75,9 @@ export function videoPage(root) {
         { value: "landscape", label: "▭ " + t("field.landscape") }, { value: "portrait", label: "▯ " + t("field.portrait") },
       ], state.orientation, (v) => { state.orientation = v; })) : null,
       slider({ label: t("field.duration"), min: 2, max: 10, step: 1, value: state.seconds, format: (v) => `${v} ${t("common.seconds")}`, onInput: (v) => { state.seconds = v; } }),
+      field(t("field.resolution"), seg([
+        { value: "high", label: t("video.res_high") }, { value: "low", label: t("video.res_low") },
+      ], state.res, (v) => { state.res = v; })),
       field(t("field.quality"), seg([
         { value: "fast", label: t("field.speed_fast") }, { value: "normal", label: t("field.speed_normal") }, { value: "best", label: t("field.speed_best") },
       ], state.quality, (v) => { state.quality = v; })),

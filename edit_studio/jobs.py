@@ -41,6 +41,7 @@ class TaskSpec:
 
 
 TASKS: dict[str, TaskSpec] = {}
+MAX_JOBS = 300  # finished jobs beyond this are forgotten (their results stay in the library)
 
 
 def task(name: str, resource: str = "gpu", params=None, model_param: str | None = None):
@@ -169,6 +170,9 @@ class JobManager:
         job = Job(id=uuid.uuid4().hex[:12], task=task_name, params=params, depends_on=depends_on)
         with self.cv:
             self.jobs[job.id] = job
+            finished = [j.id for j in self.jobs.values() if j.finished_state]
+            for old in finished[: max(0, len(self.jobs) - MAX_JOBS)]:
+                del self.jobs[old]
             self.cv.notify_all()
         self.emit(job)
         return job
@@ -315,6 +319,8 @@ class JobManager:
         ctx = TaskContext(self.services, self, job, slots)
         status, key, msg, info = "done", "", "", {}
         try:
+            if spec.resource == "gpu" and slots and self.services.hw.backend == "cuda":
+                _use_gpu(slots[0])  # implicit "cuda" tensors land on this job's GPU
             params = spec.params_model.model_validate(job.params) if spec.params_model else job.params
             outputs = spec.func(ctx, params) or []
             job.outputs = [getattr(o, "id", o) for o in outputs]
@@ -354,6 +360,13 @@ class JobManager:
         self.emit(job)
         if job.outputs:
             self.services.bus.publish("gallery", {"added": job.outputs})
+
+
+def _use_gpu(index: int) -> None:
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(index)
 
 
 NETWORK_ERRORS = {

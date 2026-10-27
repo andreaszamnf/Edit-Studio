@@ -48,7 +48,7 @@ export function jobCard(j) {
         ? h("span", null, j.slots.length > 1 ? t("jobs.on_gpus", { n: j.slots.join("+") }) : t("jobs.on_gpu", { n: j.slots[0] })) : null,
     ),
     running ? progressBar(j.progress, j.progress <= 0.001) : null,
-    j.status === "failed" ? h("div", { class: "err" }, errorText({ key: j.error_key || "error", message: j.error }), j.error_key === "error" && j.error ? "\n" + j.error : "") : null,
+    j.status === "failed" ? h("div", { class: "err" }, errorText({ key: j.error_key || "error", message: j.error, info: j.error_info }), j.error_key === "error" && j.error ? "\n" + j.error : "") : null,
   );
   if (j.outputs && j.outputs.length && j.status === "done") {
     const thumbs = h("div", { class: "job-thumbs" });

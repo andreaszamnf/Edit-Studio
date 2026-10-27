@@ -261,14 +261,24 @@ class ModelManager:
         return [{"repo": src.repo, "variant": src.variant, "skip_weights": list(src.skip_weights)}]
 
     # ------------------------------------------------------------------ planning
+    _nf4_ok: bool | None = None
+
     def can_nf4(self) -> bool:
+        """True when bitsandbytes 4-bit really runs on this GPU (a wheel without the right CUDA build imports fine)."""
         if self.hw.backend != "cuda":
             return False
-        try:
-            importlib.import_module("bitsandbytes")
-            return True
-        except Exception:
-            return False
+        if ModelManager._nf4_ok is None:
+            try:
+                torch = _torch()
+                bnb = importlib.import_module("bitsandbytes")
+                layer = bnb.nn.Linear4bit(64, 64, compute_dtype=torch.bfloat16, quant_type="nf4").to("cuda:0")
+                layer(torch.randn(1, 64, device="cuda:0", dtype=torch.bfloat16))
+                del layer
+                ModelManager._nf4_ok = True
+            except Exception as e:
+                log.warning("4-bit compression unavailable: %s", e)
+                ModelManager._nf4_ok = False
+        return ModelManager._nf4_ok
 
     def components(self, src: ModelSource) -> list[Component]:
         fam = src.family
@@ -509,6 +519,8 @@ class ModelManager:
 
     def _device_of(self, plan: Plan, name: str) -> str | None:
         """Where a component should be loaded directly (None = CPU, moved later by offload hooks)."""
+        if plan.quant.get(name) == "fp8":  # load into RAM, cast to fp8 there, then move (bf16 may not fit the GPU)
+            return None
         if plan.mode == "gpu":
             return self.hw.device_for(plan.devices[0])
         if plan.mode == "split":
@@ -541,7 +553,7 @@ class ModelManager:
         if src.kind == "checkpoint":
             base_task = "inpaint" if src.local and src.local.variant == "inpaint" else "txt2img"
             cls = getattr(diffusers, fam.pipelines[base_task])
-            pipe = cls.from_single_file(src.path, dtype=dtype, token=token)
+            pipe = cls.from_single_file(src.path, dtype=dtype, token=token, cache_dir=self.settings.hf_cache_dir())
         else:
             snap = self.hub.snapshot(src.repo)
             if snap is None:

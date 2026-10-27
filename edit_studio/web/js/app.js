@@ -1,6 +1,6 @@
 // App bootstrap: navigation, live events, jobs panel.
 import { t, getLang, setLang } from "./i18n.js";
-import { connectEvents } from "./api.js";
+import { api, connectEvents } from "./api.js";
 import { h, toast, errorText } from "./ui.js";
 import { store, on, loadSystem, loadModels, loadJobs, handleEvent } from "./state.js";
 import { route, start } from "./router.js";
@@ -24,7 +24,12 @@ function renderNav() {
   }, h("span", { class: "ico" }, n[1]), h("span", { class: "txt" }, t(`nav.${n[0]}`))))));
   const lang = document.getElementById("lang-toggle");
   lang.textContent = "🌐 " + t("lang.switch");
-  lang.onclick = () => { setLang(getLang() === "el" ? "en" : "el"); renderNav(); start(); };
+  lang.onclick = () => {
+    setLang(getLang() === "el" ? "en" : "el");
+    api.saveSettings({ language: getLang() }).catch(() => {});
+    renderNav();
+    start();
+  };
 }
 
 route("image", imagePage);
@@ -38,7 +43,7 @@ route("settings", settingsPage);
 async function boot() {
   try {
     const sys = await loadSystem();
-    if (sys.settings && sys.settings.language && !localStorage.getItem("lang")) setLang(sys.settings.language);
+    if (sys.settings && sys.settings.language) setLang(sys.settings.language);
   } catch (e) {
     document.getElementById("page").append(h("div", { class: "notice err", style: { margin: "24px" } }, errorText(e)));
     return;
@@ -58,7 +63,7 @@ async function boot() {
   // Tell the user when something fails, refresh memory status when work finishes.
   let sysTimer = null;
   on("job-finished", (j) => {
-    if (j.status === "failed") toast(`${t(`task.${j.task}`)}: ${errorText({ key: j.error_key, message: j.error })}`, "err", 9000);
+    if (j.status === "failed") toast(`${t(`task.${j.task}`)}: ${errorText({ key: j.error_key, message: j.error, info: j.error_info })}`, "err", 9000);
     clearTimeout(sysTimer);
     sysTimer = setTimeout(() => loadSystem().catch(() => {}), 400);
     if (j.task === "models.scan" || j.task === "model.download" || j.task === "tool.download") loadModels(true).catch(() => {});

@@ -17,8 +17,8 @@ let joinList = [];
 export function veditPage(root) {
   const state = remember("vedit", {
     tool: "cut", start: 0, end: 0, speed: 1, reverse: false, mute: false, flip: false, rotate: 0, aspect: "", outHeight: 0,
-    restyleModel: "wan2.1-t2v-1.3b", restylePrompt: "", strength: 0.7, maxSeconds: 5,
-    extendModel: "wan2.2-ti2v-5b", extendPrompt: "", extendSeconds: 5,
+    restyleModel: "", restylePrompt: "", strength: 0.7, maxSeconds: 5,
+    extendModel: "", extendPrompt: "", extendSeconds: 5,
     upModel: "realesr-general-x4", upScale: 2, bgModel: "birefnet-lite", bgMode: "color", bgColor: "#00ff00",
     factor: 2, slowmo: false, gifFps: 12, gifWidth: 480, steps: null, guidance: null, seed: -1, gpu: null,
   });

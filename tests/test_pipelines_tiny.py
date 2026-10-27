@@ -76,3 +76,30 @@ def test_video_generate(svc):
     item = svc.storage.get(job.outputs[0])
     assert item.kind == "video" and (item.width, item.height) == (32, 32)
     assert abs(item.duration - 5 / 8) < 0.1
+
+
+def test_split_placement_mechanics(svc, monkeypatch):
+    """Split plans: hooks on the parts that live elsewhere, pinned execution device, survives from_pipe."""
+    import torch
+
+    from edit_studio.models.planner import Plan
+
+    mm = svc.models
+    src = mm.resolve("hf:test/tiny-sdxl")
+    # pretend "GPU 1" is a different device: cpu:0 is a distinct string, so hooks get attached
+    monkeypatch.setattr(svc.hw, "device_for", lambda i: "cpu" if i == 0 else "cpu:0")
+    plan = Plan("split", [0, 1], {"unet": 0, "vae": 0, "text_encoder": 1, "text_encoder_2": 1})
+    monkeypatch.setattr(mm, "plan", lambda s, slots, gguf=False: plan)
+    pipe, used = mm.acquire(src, "txt2img", [0, 1])
+    assert used.mode == "split"
+    assert pipe._execution_device == torch.device("cpu")
+    assert hasattr(pipe.text_encoder, "_hf_hook") and not hasattr(pipe.unet, "_hf_hook")
+    image = pipe(prompt="a cat", num_inference_steps=2, width=64, height=64).images[0]
+    assert image.size == (64, 64)
+    pipe2, _ = mm.acquire(src, "img2img", [0, 1])
+    assert type(pipe2).__name__ == "StableDiffusionXLImg2ImgPipeline"
+    assert pipe2._execution_device == torch.device("cpu")
+    out = pipe2(prompt="a dog", image=image, strength=0.5, num_inference_steps=2).images[0]
+    assert out.size == (64, 64)
+    assert {s["model"] for s in mm.status()} == {"hf:test/tiny-sdxl"}
+    assert mm.status()[0]["slots"] == [0, 1]

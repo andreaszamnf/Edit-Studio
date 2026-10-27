@@ -8,7 +8,7 @@ import { takeIntent } from "../router.js";
 
 export function imagePage(root) {
   const state = remember("image", {
-    model: "z-image-turbo", prompt: "", negative_prompt: "", aspect: "1:1", mp: 1, count: 1,
+    model: "", prompt: "", negative_prompt: "", aspect: "1:1", mp: 1, count: 1,
     steps: null, guidance: null, seed: -1, loras: [], gpu: null,
   });
   const intent = takeIntent("image");
@@ -34,8 +34,13 @@ export function imagePage(root) {
   const negEl = promptBox({ value: state.negative_prompt, placeholder: t("field.negative_ph"), onInput: (v) => { state.negative_prompt = v; }, big: false });
   const negField = field(t("field.negative"), negEl);
 
+  const sizes = aspectPicker(state, (w, hh) => { size = [w, hh]; }, () => {
+    const d = picker && picker.model && picker.model.defaults;
+    return d && d.width && d.height ? (d.width * d.height) / (1024 * 1024) : 1;
+  });
   const refreshModel = () => {
     const m = picker.model;
+    sizes.refresh();
     notes.replaceChildren(modelNote(m) || "");
     negField.classList.toggle("hidden", !!m && m.negative_prompt === false);
     advanced.replaceChildren(stepsGuidance(state, m), seedField(state), loraField(state, () => picker.model), gpuField(state) || "");
@@ -51,7 +56,7 @@ export function imagePage(root) {
         notes,
         field(t("field.prompt"), promptEl),
         negField,
-        aspectPicker(state, (w, hh) => { size = [w, hh]; }),
+        sizes,
         field(t("field.count"), seg([1, 2, 3, 4].map((n) => ({ value: n, label: String(n) })), state.count, (v) => { state.count = v; })),
         section(t("common.advanced"), advanced),
         h("div", { class: "sticky-actions" }, h("button", { class: "primary wide", onclick: run }, "✨ " + t("image.button"), h("kbd", null, "Ctrl+Enter"))),

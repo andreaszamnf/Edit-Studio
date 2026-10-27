@@ -23,7 +23,7 @@ from . import __version__
 from .config import WEB_DIR
 from .jobs import TASKS
 from .models.catalog import CATALOG, FAMILIES, TOOL_MODELS, family_from_index
-from .models.manager import ModelError
+from .models.manager import ModelError, family_defaults
 from .services import Services
 
 log = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ def create_app(services: Services, allow_remote: bool = False) -> FastAPI:
                 "id": "hf:" + entry["repo"], "name": entry["repo"].split("/")[-1], "repo": entry["repo"],
                 "kind": fam.kind, "family": fam_id, "tasks": list(fam.pipelines), "installed": entry["complete"],
                 "on_disk_gb": round(entry["size"] / 1e9, 1), "source": "hf-cache", "prompt_note": fam.prompt_note,
-                "negative_prompt": fam.negative_prompt,
+                "negative_prompt": fam.negative_prompt, "defaults": family_defaults(fam_id, found[1]),
             })
         local = []
         for lm in S.local.list():
@@ -156,6 +156,7 @@ def create_app(services: Services, allow_remote: bool = False) -> FastAPI:
                 d["kind_media"] = fam.kind
                 d["prompt_note"] = fam.prompt_note
                 d["negative_prompt"] = fam.negative_prompt
+                d["defaults"] = family_defaults(lm.family, lm.variant)
                 d["needs"] = (
                     [] if not lm.base_repo or S.hub.is_installed(lm.base_repo, fam.denoisers[:1]) else [lm.base_repo]
                 )
