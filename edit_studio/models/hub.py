@@ -8,6 +8,7 @@ import os
 import shutil
 import threading
 from collections.abc import Callable
+from typing import Any
 from pathlib import Path
 
 from huggingface_hub import HfApi, constants, hf_hub_download, scan_cache_dir, snapshot_download
@@ -126,11 +127,21 @@ class _ProgressTqdm(hf_tqdm):
             self.callback(self._count, int(self.total or 0))
 
 
+def _abort_transfers() -> None:
+    try:
+        from huggingface_hub.utils._xet import abort_xet_session
+
+        abort_xet_session()
+    except Exception as e:  # older/newer huggingface_hub without it, or hf_xet not installed
+        log.debug("No Xet session to abort: %s", e)
+
+
 class HubClient:
     def __init__(self, token_fn: Callable[[], str | None], cache_fn: Callable[[], str | None], manifest_dir: Path):
         self.token_fn = token_fn
         self.cache_fn = cache_fn
         self.manifest_dir = manifest_dir
+        self._aborts = 0  # cancelled downloads so far (each one stops all Xet transfers)
 
     # ---------------------------------------------------------------- remote
     def remote_files(self, repo: str, variant: str | None, skip_weights: tuple[str, ...] = ()) -> list[tuple[str, int]]:
@@ -163,16 +174,56 @@ class HubClient:
         cls = type("_BoundProgress", (_ProgressTqdm,), {})
         cls.callback = staticmethod(lambda n, t: progress(n, max(t, total)))
         cls.cancel_event = cancel_event
-        path = snapshot_download(
-            repo,
-            allow_patterns=[name for name, _ in files],
-            token=self.token_fn(),
-            cache_dir=self.cache_fn(),
-            tqdm_class=cls,
-            max_workers=8,
-        )
+        for _attempt in range(5):
+            aborts = self._aborts
+            try:
+                path = self._snapshot_download(repo, [name for name, _ in files], cls, cancel_event)
+                break
+            except DownloadCancelled:
+                raise
+            except Exception:
+                if self._aborts == aborts:
+                    raise
+                # another download was cancelled, which stops every Xet transfer: carry on where we were
+                log.info("Resuming %s after another download was cancelled", repo)
+        else:
+            raise RuntimeError(f"download of {repo} was interrupted too often")
         self.write_manifest(repo, [name for name, _ in files], total, skip_weights)
         return Path(path)
+
+    def _snapshot_download(self, repo: str, files: list[str], tqdm_cls, cancel_event: threading.Event) -> str:
+        """snapshot_download in a helper thread, so cancelling works at once.
+
+        Large files come through Xet, whose transfers run in Rust: an exception raised from its progress
+        callback doesn't stop them. Cancelling therefore aborts the Xet session (as Ctrl+C does) and returns
+        right away; the partial files stay in the cache and a later download resumes them."""
+        result: dict[str, Any] = {}
+
+        def run():
+            try:
+                result["path"] = snapshot_download(
+                    repo,
+                    allow_patterns=files,
+                    token=self.token_fn(),
+                    cache_dir=self.cache_fn(),
+                    tqdm_class=tqdm_cls,
+                    max_workers=8,
+                )
+            except BaseException as e:  # noqa: BLE001 - handed to the waiting thread
+                result["error"] = e
+
+        worker = threading.Thread(target=run, name=f"download-{repo}", daemon=True)
+        worker.start()
+        while worker.is_alive():
+            worker.join(0.25)
+            if cancel_event.is_set():
+                self._aborts += 1
+                _abort_transfers()
+                worker.join(15)  # plain HTTP transfers stop at their next chunk
+                raise DownloadCancelled()
+        if "error" in result:
+            raise result["error"]
+        return result["path"]
 
     # ---------------------------------------------------------------- local state
     def _manifest_path(self, repo: str) -> Path:

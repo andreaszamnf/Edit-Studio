@@ -112,11 +112,11 @@ def _open_window(url: str, paths) -> bool:
         webview.settings["ALLOW_DOWNLOADS"] = True
     window = webview.create_window("Edit Studio", url, width=1480, height=940, min_size=(1024, 700))
     kwargs = {"private_mode": False, "storage_path": str(paths.cache / "webview")}  # keep language / form choices
+    if "icon" in inspect.signature(webview.start).parameters:  # documented for GTK/Qt, honoured by WinForms too
+        kwargs["icon"] = str(ICON if sys.platform == "win32" else ICON.with_suffix(".png"))
     if sys.platform == "win32":
         kwargs["gui"] = "edgechromium"  # never the old Internet Explorer engine
-        window.events.shown += lambda: _set_window_icon(window)
-    elif "icon" in inspect.signature(webview.start).parameters:  # GTK / Qt
-        kwargs["icon"] = str(ICON.with_suffix(".png"))
+        window.events.shown += lambda: _set_window_icon(window)  # older pywebview: set it on the window ourselves
     try:
         webview.start(**kwargs)
     except Exception as e:

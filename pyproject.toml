@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "edit-studio"
-version = "0.2.1"
+version = "0.2.2"
 description = "Τοπική εφαρμογή για δημιουργία και επεξεργασία εικόνων και βίντεο με AI μοντέλα"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,7 +42,7 @@ quant = ["bitsandbytes>=0.48; sys_platform != 'darwin'"]
 # Background removal (ONNX). The Windows installer swaps in onnxruntime-directml.
 bg = ["onnxruntime>=1.20"]
 # Native desktop window instead of the browser
-desktop = ["pywebview>=5.4"]
+desktop = ["pywebview>=6.0"]
 dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.scripts]

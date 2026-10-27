@@ -178,3 +178,60 @@ def test_scan_stability_matrix_and_forge_layouts(tmp_path):
     found = {m.name: m for m in lib.scan([str(sm), str(tmp_path / "webui_forge_cu121" / "webui")], auto=False)}
     assert found["pony"].source == "StabilityMatrix" and found["pony"].family == "sdxl"
     assert found["dreamshaper"].source == "Forge" and found["dreamshaper"].family == "sd15"
+
+
+def test_cancel_stops_a_download_that_ignores_progress_exceptions(tmp_path, monkeypatch):
+    """Xet transfers run in Rust and ignore exceptions from the progress callback: cancel must abort them."""
+    import threading
+    import time
+
+    import edit_studio.models.hub as hub_mod
+    from edit_studio.models.hub import DownloadCancelled
+
+    aborted = threading.Event()
+
+    def fake_snapshot_download(repo, **kw):
+        bar = kw["tqdm_class"](total=100, name="huggingface_hub.snapshot_download")
+        while not aborted.is_set():  # like Rust: swallows what the callback raises
+            try:
+                bar.update(1)
+            except DownloadCancelled:
+                pass
+            time.sleep(0.01)
+        raise RuntimeError("xet session aborted")
+
+    monkeypatch.setattr(hub_mod, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(hub_mod, "_abort_transfers", aborted.set)
+    hub = HubClient(lambda: None, lambda: str(tmp_path), tmp_path / "manifests")
+    monkeypatch.setattr(hub, "remote_files", lambda repo, variant, skip=(): [("model_index.json", 100)])
+
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    t0 = time.time()
+    try:
+        hub.download("org/model", None, lambda n, t: None, cancel)
+        raise AssertionError("not cancelled")
+    except DownloadCancelled:
+        pass
+    assert time.time() - t0 < 3 and aborted.is_set()
+
+
+def test_download_resumes_when_another_download_was_cancelled(tmp_path, monkeypatch):
+    import threading
+
+    import edit_studio.models.hub as hub_mod
+
+    hub = HubClient(lambda: None, lambda: str(tmp_path), tmp_path / "manifests")
+    calls = []
+
+    def fake_snapshot_download(repo, **kw):
+        calls.append(repo)
+        if len(calls) == 1:
+            hub._aborts += 1  # someone cancelled their download meanwhile: Xet aborted ours too
+            raise RuntimeError("xet session aborted")
+        return str(tmp_path / "snap")
+
+    monkeypatch.setattr(hub_mod, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(hub, "remote_files", lambda repo, variant, skip=(): [("model_index.json", 1)])
+    assert hub.download("org/model", None, lambda n, t: None, threading.Event()) == tmp_path / "snap"
+    assert len(calls) == 2
