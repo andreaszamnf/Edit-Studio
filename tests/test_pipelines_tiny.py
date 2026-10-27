@@ -276,5 +276,12 @@ def test_non_finite_output_fails_with_the_part_named(svc):
     finally:
         handle.remove()
     assert job.status == "failed" and job.error_key == "nan_output" and job.error_info["component"] == "unet"
+    handle = pipe.unet.up_blocks[1].register_forward_hook(lambda module, args, out: out * float("nan"))
+    try:
+        job = wait(svc.jobs.submit("image.generate", {"model": "hf:test/tiny-sdxl", "prompt": "a cat", "width": 64,
+                                                      "height": 64, "steps": 2}))
+    finally:
+        handle.remove()
+    assert job.error_info["component"] == "unet.up_blocks.1 (cpu)"  # the first bad layer and where it runs
     assert not hasattr(pipe.vae, "decode") or "decode" not in vars(pipe.vae)  # wrapper removed again
     run(svc, "image.generate", {"model": "hf:test/tiny-sdxl", "prompt": "a cat", "width": 64, "height": 64, "steps": 2})

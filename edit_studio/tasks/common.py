@@ -145,6 +145,11 @@ class _NanWatch:
         self.wrapped = []
         for name, module in getattr(pipe, "components", {}).items():
             if isinstance(module, torch.nn.Module):
+                # its layer stacks first: their hooks fire before the whole model's, naming the first bad layer
+                for stack, child in module.named_children():
+                    if isinstance(child, torch.nn.ModuleList):
+                        for i, block in enumerate(child):
+                            self.handles.append(block.register_forward_hook(self._hook(f"{name}.{stack}.{i}", block)))
                 self.handles.append(module.register_forward_hook(self._hook(name)))
                 if callable(getattr(module, "decode", None)):  # VAEs are called through decode(), not forward()
                     self._wrap_decode(name, module)
@@ -161,14 +166,15 @@ class _NanWatch:
         module.decode = decode
         self.wrapped.append(module)
 
-    def _hook(self, name: str):
+    def _hook(self, name: str, block=None):
         import torch
 
         def check(_module, _args, out):
             if self.bad is None:
                 for t in _tensors(out):
                     if t.is_floating_point() and not bool(torch.isfinite(t).all()):
-                        self.bad = name
+                        where = next((p.device for p in block.parameters()), None) if block is not None else None
+                        self.bad = f"{name} ({where})" if where is not None else name
                         break
 
         return check
