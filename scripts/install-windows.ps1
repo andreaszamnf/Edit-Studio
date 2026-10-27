@@ -25,6 +25,17 @@ function Run($exe, [string[]]$argv) {
 
 Write-Host "Edit Studio - Εγκατάσταση / Setup" -ForegroundColor Magenta
 
+# ---------------------------------------------------------------- the app must be closed (its files are in use)
+$ProgressPreference = "SilentlyContinue"
+foreach ($port in 8765..8774) {
+    $running = $false
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Uri "http://127.0.0.1:$port/api/system"
+        $running = $r.Content -match '"version"'
+    } catch { }
+    if ($running) { Fail "Το Edit Studio είναι ανοιχτό. Κλείσ' το και ξανατρέξε αυτό το αρχείο." "Edit Studio is running. Close it and run this again." }
+}
+
 # ---------------------------------------------------------------- graphics card
 Step "Έλεγχος κάρτας γραφικών..." "Checking the graphics card..."
 $gpuInfo = $null
@@ -98,6 +109,20 @@ foreach ($dir in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFo
         $lnk.Save()
         Write-Host "    $dir\Edit Studio.lnk"
     } catch { Write-Host "    (skip $dir)" }
+}
+
+# ---------------------------------------------------------------- version
+$version = ""
+$commit = ""
+try { $version = (& $py -c "import edit_studio; print(edit_studio.__version__)") } catch { }
+if (Test-Path (Join-Path $Root ".git")) {
+    try { $commit = (& git -C $Root log -1 --format="%h, %cd" --date=short) } catch { }
+}
+Write-Host ""
+Write-Host "Edit Studio $version $(if ($commit) { "($commit)" })" -ForegroundColor Magenta
+if (-not (Test-Path (Join-Path $Root ".git"))) {
+    Write-Host "    Για νεότερη έκδοση: κατέβασε ξανά το ZIP από το GitHub, αντέγραψε τα αρχεία πάνω σε αυτόν τον φάκελο" -ForegroundColor DarkGray
+    Write-Host "    και τρέξε το update.bat. / To update: download the ZIP again, copy it over this folder, run update.bat." -ForegroundColor DarkGray
 }
 
 Write-Host ""
