@@ -26,7 +26,7 @@ _register_fake_tasks()
 
 def test_two_gpus_run_jobs_in_parallel(two_gpu_services, monkeypatch):
     svc = two_gpu_services
-    monkeypatch.setattr(svc.models, "gpus_needed", lambda model, enabled: 1)
+    monkeypatch.setattr(svc.models, "gpu_range", lambda model, enabled: (1, 1))
     t0 = time.time()
     a = svc.jobs.submit("test.gpu", {"model": "m1", "seconds": 0.6})
     b = svc.jobs.submit("test.gpu", {"model": "m2", "seconds": 0.6})
@@ -38,7 +38,7 @@ def test_two_gpus_run_jobs_in_parallel(two_gpu_services, monkeypatch):
 
 def test_split_job_waits_for_both_gpus_and_blocks_others(two_gpu_services, monkeypatch):
     svc = two_gpu_services
-    monkeypatch.setattr(svc.models, "gpus_needed", lambda model, enabled: 2 if model == "big" else 1)
+    monkeypatch.setattr(svc.models, "gpu_range", lambda model, enabled: (2, 2) if model == "big" else (1, 1))
     first = svc.jobs.submit("test.gpu", {"model": "small", "seconds": 0.5})
     time.sleep(0.15)
     big = svc.jobs.submit("test.gpu", {"model": "big", "seconds": 0.3})
@@ -51,16 +51,33 @@ def test_split_job_waits_for_both_gpus_and_blocks_others(two_gpu_services, monke
     assert later.started >= big.started
 
 
+def test_flexible_job_takes_both_cards_when_free_and_one_when_busy(two_gpu_services, monkeypatch):
+    svc = two_gpu_services
+    monkeypatch.setattr(svc.models, "gpu_range", lambda model, enabled: (1, 2) if model == "mid" else (1, 1))
+    alone = wait(svc.jobs.submit("test.gpu", {"model": "mid", "seconds": 0.05}))
+    assert sorted(alone.slots) == [0, 1]  # nothing else running: both cards
+
+    busy = svc.jobs.submit("test.gpu", {"model": "other", "seconds": 0.6})
+    deadline = time.time() + 3
+    while busy.status != "running" and time.time() < deadline:
+        time.sleep(0.02)
+    mid = svc.jobs.submit("test.gpu", {"model": "mid", "seconds": 0.05})
+    wait(mid)
+    assert len(mid.slots) == 1 and mid.slots[0] not in busy.slots  # didn't wait for the busy card
+    assert busy.status == "running"
+    wait(busy)
+
+
 def test_pinned_gpu_is_respected(two_gpu_services, monkeypatch):
     svc = two_gpu_services
-    monkeypatch.setattr(svc.models, "gpus_needed", lambda model, enabled: 1)
+    monkeypatch.setattr(svc.models, "gpu_range", lambda model, enabled: (1, 2))
     j = wait(svc.jobs.submit("test.gpu", {"model": "m", "gpu": 1, "seconds": 0.05}))
     assert j.slots == [1]
 
 
 def test_cancel_running_and_queued(two_gpu_services, monkeypatch):
     svc = two_gpu_services
-    monkeypatch.setattr(svc.models, "gpus_needed", lambda model, enabled: 2)
+    monkeypatch.setattr(svc.models, "gpu_range", lambda model, enabled: (2, 2))
     running = svc.jobs.submit("test.gpu", {"model": "m", "seconds": 5})
     queued = svc.jobs.submit("test.gpu", {"model": "m", "seconds": 5})
     deadline = time.time() + 3

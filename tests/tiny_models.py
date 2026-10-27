@@ -106,3 +106,22 @@ def put_in_hf_cache(pipe, cache: Path, repo: str) -> Path:
     (folder / "refs" / "main").write_text(commit)
     (folder / "blobs").mkdir(exist_ok=True)
     return snap
+
+
+def tiny_wan_lora(folder: Path) -> Path:
+    """A LoRA for tiny_wan()'s transformer with non-zero weights, saved like a downloaded LoRA file."""
+    import torch
+    from diffusers import WanPipeline
+    from peft import LoraConfig
+    from peft.utils import get_peft_model_state_dict
+
+    transformer = tiny_wan().transformer
+    transformer.add_adapter(LoraConfig(r=2, lora_alpha=2, target_modules=["to_q", "to_k", "to_v"]))
+    torch.manual_seed(1)
+    with torch.no_grad():
+        for name, p in transformer.named_parameters():
+            if "lora_" in name:
+                p.normal_(0, 0.5)
+    WanPipeline.save_lora_weights(folder, transformer_lora_layers=get_peft_model_state_dict(transformer),
+                                  weight_name="tiny_wan_lora.safetensors")
+    return folder / "tiny_wan_lora.safetensors"

@@ -3,13 +3,38 @@ import { t, desc } from "../i18n.js";
 import { h, clear } from "../ui.js";
 import { store, on, modelsFor, findModel } from "../state.js";
 
+/** The memory plan in short pieces: where it runs, compression, text encoder on the CPU, one-card fallback. */
+export function planParts(plan) {
+  if (!plan) return [];
+  const many = plan.mode === "split" || plan.mode === "shard";
+  const parts = [many ? t(`plan.${plan.mode}`, { n: plan.gpus_needed }) : t(`plan.${plan.mode}`)];
+  const q = plan.main_quant !== undefined ? plan.main_quant : Object.values(plan.quant || {}).sort().pop();
+  if (q === "nf4") parts.push(t("plan.nf4"));
+  else if (q === "fp8") parts.push(t("plan.fp8"));
+  if ((plan.cpu_parts || []).length) parts.push(t("plan.cpu_text"));
+  if (plan.gpus && plan.gpus[0] === 1 && plan.gpus[1] > 1) parts.push(t("plan.or_one"));
+  return parts;
+}
+
 export function planLabel(plan) {
+  return planParts(plan).join(" · ");
+}
+
+/** One tag per piece (they wrap on narrow screens), all explaining the plan on hover. */
+export function planTags(plan) {
+  const title = planTitle(plan);
+  return planParts(plan).map((text, i) => h("span", { class: i ? "tag" : "tag accent", title }, text));
+}
+
+/** Longer explanation for the plan tag's tooltip. */
+export function planTitle(plan) {
   if (!plan) return "";
-  let s = plan.mode === "split" ? t("plan.split", { n: plan.gpus_needed }) : t(`plan.${plan.mode}`);
-  const q = Object.values(plan.quant || {});
-  if (q.includes("nf4")) s += " · " + t("plan.nf4");
-  else if (q.includes("fp8")) s += " · " + t("plan.fp8");
-  return s;
+  const bits = [t(`plan.why.${plan.mode}`)];
+  if (plan.gpus && plan.gpus[0] > 1) bits.push(t("plan.why.waits"));
+  if (plan.alone) bits.push(t("plan.why.alone", { plan: planLabel({ ...plan.alone, gpus: null }) }));
+  if ((plan.cpu_parts || []).length) bits.push(t("plan.why.cpu_text"));
+  if (plan.text_quant === "nf4" && plan.main_quant !== "nf4") bits.push(t("plan.why.text_nf4"));
+  return bits.join("\n");
 }
 
 export function modelTags(m) {
@@ -20,7 +45,6 @@ export function modelTags(m) {
       : h("span", { class: "tag warn" }, "⬇ " + t("model.not_installed", { gb: Math.round(m.download_gb) })));
     if (!m.commercial) tags.push(h("span", { class: "tag" }, t("model.noncommercial")));
     if (m.gated) tags.push(h("span", { class: "tag info" }, t("model.gated")));
-    if (m.plan) tags.push(h("span", { class: "tag accent" }, planLabel(m.plan)));
   } else if (m.source === "hf-cache") {
     tags.push(h("span", { class: "tag ok" }, t("model.hf_cache")));
   } else {
@@ -28,6 +52,7 @@ export function modelTags(m) {
     if (m.dtype && m.dtype !== "?") tags.push(h("span", { class: "tag" }, m.dtype));
     if (m.needs && m.needs.length) tags.push(h("span", { class: "tag warn" }, t("model.needs_base")));
   }
+  tags.push(...planTags(m.plan));
   return tags;
 }
 

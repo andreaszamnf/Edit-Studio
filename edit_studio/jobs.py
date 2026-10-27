@@ -73,7 +73,7 @@ class Job:
     error_key: str = ""
     error_info: dict = field(default_factory=dict)
     depends_on: str | None = None
-    gpus_needed: int = 0  # 0 = not planned yet
+    gpu_range: tuple[int, int] | None = None  # (fewest, most) GPUs; None = not planned yet
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def public(self) -> dict:
@@ -256,18 +256,18 @@ class JobManager:
             if spec.resource == "gpu":
                 if gpu_blocked:
                     continue
-                need = self._gpus_needed(job, spec)
+                fewest, most = self._gpu_range(job, spec)
                 pinned = job.params.get("gpu")
-                if isinstance(pinned, int) and pinned in self.slot_ids and need == 1:
+                if isinstance(pinned, int) and pinned in self.slot_ids:  # the user picked a card: only that one
                     if pinned not in free:
                         continue
                     chosen = [pinned]
-                elif len(free) < need:
-                    if need > 1:
+                elif len(free) < fewest:
+                    if fewest > 1:
                         gpu_blocked = True  # a two-GPU job waits at the front; don't starve it
                     continue
-                else:
-                    chosen = self._choose_slots(job, spec, free, need)
+                else:  # e.g. both cards when both are free, one when the other is busy
+                    chosen = self._choose_slots(job, spec, free, min(most, len(free)))
                 for s in chosen:
                     self.slot_busy[s] = job.id
                     free.remove(s)
@@ -279,18 +279,19 @@ class JobManager:
                 self.running[spec.resource] += 1
                 self._spawn(job, spec, [])
 
-    def _gpus_needed(self, job: Job, spec: TaskSpec) -> int:
-        if job.gpus_needed:
-            return job.gpus_needed
-        need = 1
+    def _gpu_range(self, job: Job, spec: TaskSpec) -> tuple[int, int]:
+        if job.gpu_range:
+            return job.gpu_range
+        fewest, most = 1, 1
         model_id = job.params.get(spec.model_param) if spec.model_param else None
         if model_id and len(self.slot_ids) > 1:
             try:
-                need = self.services.models.gpus_needed(model_id, self.slot_ids)
+                fewest, most = self.services.models.gpu_range(model_id, self.slot_ids)
             except Exception:
                 log.exception("planning failed for %s", model_id)
-        job.gpus_needed = max(1, min(need, len(self.slot_ids)))
-        return job.gpus_needed
+        n = len(self.slot_ids)
+        job.gpu_range = (max(1, min(fewest, n)), max(1, min(most, n)))
+        return job.gpu_range
 
     def _choose_slots(self, job: Job, spec: TaskSpec, free: list[int], need: int) -> list[int]:
         if need > 1:

@@ -102,13 +102,16 @@ def create_app(services: Services, allow_remote: bool = False) -> FastAPI:
         return {**s.public(), "restart_needed": s.enabled_gpus != before}
 
     # ------------------------------------------------------------------ models
+    def _plan_of(model_id: str) -> dict | None:
+        try:
+            return S.models.describe(S.models.resolve(model_id), S.jobs.slot_ids)
+        except Exception as e:  # never break the listing because of one model
+            log.info("plan failed for %s: %s", model_id, e)
+            return None
+
     def _catalog_entry(spec) -> dict:
         installed = S.hub.is_installed(spec.repo)
-        try:
-            plan = S.models.plan(S.models.resolve(spec.id), S.jobs.slot_ids).public()
-        except Exception as e:  # never break the listing because of one model
-            log.info("plan failed for %s: %s", spec.id, e)
-            plan = None
+        plan = _plan_of(spec.id)
         return {
             "id": spec.id,
             "name": spec.name,
@@ -146,6 +149,7 @@ def create_app(services: Services, allow_remote: bool = False) -> FastAPI:
                 "kind": fam.kind, "family": fam_id, "tasks": list(fam.pipelines), "installed": entry["complete"],
                 "on_disk_gb": round(entry["size"] / 1e9, 1), "source": "hf-cache", "prompt_note": fam.prompt_note,
                 "negative_prompt": fam.negative_prompt, "defaults": family_defaults(fam_id, found[1]),
+                "plan": _plan_of("hf:" + entry["repo"]) if entry["complete"] else None,
             })
         local = []
         for lm in S.local.list():
@@ -160,6 +164,8 @@ def create_app(services: Services, allow_remote: bool = False) -> FastAPI:
                 d["needs"] = (
                     [] if not lm.base_repo or S.hub.is_installed(lm.base_repo, fam.denoisers[:1]) else [lm.base_repo]
                 )
+                if lm.supported and not d["needs"]:  # with the base parts missing the sizes are unknown
+                    d["plan"] = _plan_of(lm.id)
             local.append(d)
         tools = [
             {"id": t.id, "kind": t.kind, "name": t.name, "size_mb": t.size_mb, "scale": t.scale,

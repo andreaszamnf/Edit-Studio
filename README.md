@@ -21,11 +21,17 @@
 
 Η εφαρμογή βλέπει όλες τις κάρτες NVIDIA και τις χρησιμοποιεί έξυπνα:
 
-* **Δύο δουλειές μαζί.** Π.χ. φτιάχνεις εικόνες στη μία κάρτα ενώ ένα βίντεο «ψήνεται» στην άλλη.
-* **Ένα μεγάλο μοντέλο μοιρασμένο και στις δύο.** Μοντέλα πολύ μεγάλα για 16GB (Qwen-Image-Edit 20B, Wan 2.2 A14B)
-  μοιράζονται αυτόματα: π.χ. ένας «ειδικός» του Wan 2.2 σε κάθε κάρτα. Όταν χρειάζεται, συμπιέζονται σε 8-bit ή 4-bit.
-* Για κάθε μοντέλο υπάρχει έτοιμο σχέδιο μνήμης, και φαίνεται δίπλα στο όνομά του (π.χ. «1 κάρτα + RAM»,
-  «Μοιρασμένο σε 2 κάρτες · συμπίεση 4-bit»). Αν τελειώσει η μνήμη, ξαναπροσπαθεί μόνη της με πιο οικονομικό τρόπο.
+* **Τα μεγάλα μοντέλα μοιράζονται και στις δύο.** Όσα δεν χωράνε σε μία κάρτα 16GB (π.χ. Qwen-Image-Edit 20B)
+  μοιράζουν τα ίδια τα στρώματά τους και στις δύο κάρτες και τρέχουν σε 8-bit αντί για 4-bit, με καλύτερη ποιότητα.
+  Περιμένουν να ελευθερωθούν και οι δύο κάρτες.
+* **Τα μεσαία μοντέλα εικόνας** (Z-Image, FLUX.2, FLUX.1 Kontext) πιάνουν και τις δύο κάρτες όταν είναι ελεύθερες
+  (κείμενο στη μία, κύριο μοντέλο στην άλλη: πιο γρήγορα), αλλιώς τρέχουν στη μία που είναι ελεύθερη.
+* **Δύο δουλειές μαζί.** Τα βίντεο μεσαίου μεγέθους (Wan 5B, Wan 1.3B) τρέχουν σε μία κάρτα, αφού το μοίρασμα δεν
+  θα τα έκανε πιο γρήγορα, ώστε να φτιάχνεις εικόνες στην άλλη όσο το βίντεο «ψήνεται». Το Wan 2.2 A14B βάζει
+  έναν από τους δύο «ειδικούς» του σε κάθε κάρτα όταν είναι ελεύθερες.
+* Δίπλα σε κάθε μοντέλο φαίνεται το σχέδιο μνήμης, π.χ. «Στρώματα μοιρασμένα σε 2 κάρτες · συμπίεση 8-bit ·
+  κείμενο στον επεξεργαστή». Αν αφήσεις το ποντίκι από πάνω, βλέπεις την εξήγηση. Αν τελειώσει η μνήμη,
+  ξαναπροσπαθεί μόνη της με πιο οικονομικό τρόπο.
 
 ## Εγκατάσταση (Windows 10/11)
 
@@ -134,7 +140,7 @@ python -m edit_studio --browser --verbose
 | `edit_studio/app.py` | API (FastAPI) και ασφάλεια |
 | `edit_studio/jobs.py` | ουρά εργασιών: μία «θέση» ανά κάρτα, κοινές δουλειές σε 2 κάρτες |
 | `edit_studio/models/catalog.py` | κατάλογος μοντέλων, οικογένειες, pipelines |
-| `edit_studio/models/planner.py` | σχέδιο μνήμης: 1 κάρτα / offload / μοίρασμα / συμπίεση |
+| `edit_studio/models/planner.py` | σχέδιο μνήμης: 1 κάρτα / offload / μοίρασμα ανά μέρος ή ανά στρώματα / συμπίεση |
 | `edit_studio/models/manager.py` | φόρτωση με diffusers, cache, LoRA, αλλαγή λειτουργίας με `from_pipe` |
 | `edit_studio/models/local.py` | εύρεση και αναγνώριση αρχείων από ComfyUI/Forge/A1111/Fooocus |
 | `edit_studio/tasks/` | όλες οι λειτουργίες (εικόνα, βίντεο, εργαλεία) |
@@ -152,8 +158,10 @@ python -m edit_studio --browser --verbose
   frame interpolation, cut/speed/crop, GIF, join.
 * **Models**: finds the models you already have in ComfyUI, Forge, A1111, Fooocus, StabilityMatrix or the HF cache
   (checkpoints, transformer files including GGUF, LoRAs, upscalers).
-* **Multi-GPU**: runs two jobs in parallel (one per GPU) or splits one big model over both GPUs (e.g. one Wan 2.2
-  A14B expert per card), with automatic fp8/NF4 compression and an out-of-memory fallback.
+* **Multi-GPU**: models too big for one card spread their transformer layers over both GPUs (fp8 storage instead of
+  NF4 on one card, streamed in tensor by tensor); mid-size image models put the text encoder and the transformer on
+  different GPUs when both are free and use one card otherwise; mid-size video models stay on one card so a second
+  job can use the other. Out-of-memory errors re-plan with more headroom.
 
 Install on Windows: run `install.bat`, then open the *Edit Studio* shortcut. On macOS/Linux use `./install.sh` and
 `./run.sh`.

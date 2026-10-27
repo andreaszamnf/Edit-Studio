@@ -9,7 +9,8 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,9 +20,13 @@ from ..hardware import GB, Hardware
 from .catalog import CATALOG_BY_ID, FAMILIES, Family, ModelSpec, family_from_index
 from .hub import HubClient
 from .local import LocalLibrary, LocalModel
-from .planner import CPU, Component, Plan, fallback, make_plan
+from .planner import CPU, SHARDED, Component, Options, Plan, plan_options, sequential_plan, size_of
 
 log = logging.getLogger(__name__)
+
+# After an out-of-memory error the model is planned again with this much more room for activations;
+# past the last step it runs in the slow sequential mode.
+OOM_HEADROOM = (1.0, 1.6, 2.5, 4.0)
 
 # Defaults for models that don't come from the catalog (local files / other HF repos).
 FAMILY_DEFAULTS: dict[tuple[str, str], dict[str, Any]] = {
@@ -164,8 +169,11 @@ def _role(fam: Family, name: str) -> str:
     return "other"
 
 
-def _pin_execution_device(pipe, device: str) -> None:
-    """Split pipelines: make every intermediate tensor start on the main GPU."""
+def _pin_execution_device(pipe, device: str, plan: Plan) -> None:
+    """Split / shard pipelines: every intermediate tensor starts on the main GPU.
+
+    The device map also tells diffusers the parts are placed on purpose: otherwise loading a LoRA would take
+    our hooks for CPU offloading, remove them and switch the whole pipeline to sequential offload."""
     torch = _torch()
     cls = pipe.__class__
     base = cls.__bases__[0] if getattr(cls, "_es_pinned", False) else cls
@@ -176,6 +184,110 @@ def _pin_execution_device(pipe, device: str) -> None:
     )
     pipe.__class__ = pinned
     pipe._es_device = device
+    pipe.hf_device_map = {"": device, **{k: str(v) for k, v in plan.placement.items()}}
+
+
+def _is_quantized(module) -> bool:
+    return bool(getattr(module, "is_quantized", False) or getattr(module, "hf_quantizer", None) is not None)
+
+
+class StreamLoadError(Exception):
+    """The streaming loader could not build this model (unusual layout); the classic loader takes over."""
+
+
+def _shard_units(model) -> list[tuple[str, int, str | None]]:
+    """Top-level pieces of a model in registration order, with layer stacks (ModuleList) split into blocks:
+    (name, bytes, stack name or None)."""
+    torch = _torch()
+
+    def nbytes(m) -> int:
+        return sum(t.numel() * t.element_size() for t in list(m.parameters()) + list(m.buffers()))
+
+    units = [(n, p.numel() * p.element_size(), None) for n, p in model.named_parameters(recurse=False)]
+    for n, child in model.named_children():
+        if isinstance(child, torch.nn.ModuleList) and len(child) > 1:
+            units += [(f"{n}.{i}", nbytes(block), n) for i, block in enumerate(child)]
+        else:
+            units.append((n, nbytes(child), None))
+    units += [(n, b.numel() * b.element_size(), None) for n, b in model.named_buffers(recurse=False)]
+    return units
+
+
+def shard_split(units: list[tuple[str, int, str | None]], room: list[int]) -> dict[str, int]:
+    """Which of two GPUs (0 or 1) gets each piece: one contiguous run per GPU in registration order (the layout
+    diffusers tests with accelerate's device maps), balanced so both fill the same share of their room.
+
+    The hand-over happens inside the main layer stack (with any stacks right next to it, like FLUX's double and
+    single blocks): smaller stacks such as Z-Image's refiners feed root code that mixes their output with tensors
+    of the first GPU, so they must not be cut."""
+    stacks: dict[str, int] = {}
+    for _, size, stack in units:
+        if stack:
+            stacks[stack] = stacks.get(stack, 0) + size
+    if stacks:
+        main = max(stacks, key=stacks.get)
+        lo = next(i for i, u in enumerate(units) if u[2] == main)
+        hi = max(i for i, u in enumerate(units) if u[2] == main) + 1
+        while lo > 0 and units[lo - 1][2]:
+            lo -= 1
+        while hi < len(units) and units[hi][2]:
+            hi += 1
+        cuts = range(lo, hi + 1)
+    else:
+        cuts = range(len(units) + 1)
+    prefix = [0]
+    for _, size, _ in units:
+        prefix.append(prefix[-1] + size)
+    total = prefix[-1]
+    k = min(cuts, key=lambda k: max(prefix[k] / room[0], (total - prefix[k]) / room[1]))
+    if prefix[k] > room[0] * 1.05 or total - prefix[k] > room[1] * 1.05:
+        raise _torch().OutOfMemoryError(f"layers need {total / GB:.1f} GB, room is {sum(room) / GB:.1f} GB")
+    return {name: 0 if i < k else 1 for i, (name, _, _) in enumerate(units)}
+
+
+def _device_for_key(key: str, device_map: dict[str, str]) -> str:
+    name = key
+    while name and name not in device_map:
+        name = name.rpartition(".")[0]
+    return device_map.get(name, device_map.get("", "cpu"))
+
+
+def _weight_files(folder: Path) -> list[Path]:
+    for index in [folder / "diffusion_pytorch_model.safetensors.index.json", *sorted(folder.glob("*.safetensors.index*.json"))]:
+        if index.is_file():
+            names = sorted(set(json.loads(index.read_text(encoding="utf-8"))["weight_map"].values()))
+            return [folder / n for n in names]
+    single = folder / "diffusion_pytorch_model.safetensors"
+    files = [single] if single.is_file() else sorted(folder.glob("*.safetensors"))
+    if not files:
+        raise ValueError(f"no safetensors weights in {folder}")
+    return files
+
+
+def _weight_stream(folder: Path, local: str | None, cls, model, config) -> Iterator[tuple[str, Any]]:
+    """(name, tensor) pairs of a denoiser: one tensor at a time from a diffusers folder, or from a single file
+    (ComfyUI / A1111 layout) converted to diffusers names the way `from_single_file` does it."""
+    if local is None:
+        from safetensors import safe_open
+
+        for f in _weight_files(folder):
+            with safe_open(str(f), framework="pt", device="cpu") as fh:
+                for key in fh.keys():
+                    yield key, fh.get_tensor(key)
+        return
+    from diffusers.loaders.single_file_model import (
+        SINGLE_FILE_LOADABLE_CLASSES,
+        _get_single_file_loadable_mapping_class,
+        _should_convert_state_dict_to_diffusers,
+    )
+    from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+    checkpoint = load_single_file_checkpoint(local, local_files_only=True)
+    if _should_convert_state_dict_to_diffusers(model.state_dict(), checkpoint):
+        convert = SINGLE_FILE_LOADABLE_CLASSES[_get_single_file_loadable_mapping_class(cls)]["checkpoint_mapping_fn"]
+        checkpoint = convert(config=config, checkpoint=checkpoint)
+    for key in list(checkpoint):
+        yield key, checkpoint.pop(key)  # frees system RAM as the weights move to the GPUs
 
 
 class ModelManager:
@@ -194,7 +306,8 @@ class ModelManager:
         self.busy_slots = busy_slots
         self.lock = threading.RLock()
         self.loaded: dict[int, LoadedModel] = {}
-        self._plan_overrides: dict[str, Plan] = {}
+        self._oom_level: dict[str, int] = {}  # plan key -> how many times it ran out of memory
+        self._simple_load: set[str] = set()  # models the streaming loader could not handle
 
     # ------------------------------------------------------------------ resolve
     def resolve(self, model_id: str) -> ModelSource:
@@ -293,19 +406,21 @@ class ModelManager:
             except Exception:
                 pass
             unet = int(total * 0.75)
+            # one file loaded as a whole pipeline: no per-part compression or spreading
             return [
-                Component(fam.denoisers[0], unet, "denoiser"),
-                Component("text_encoder", int(total * 0.2), "text_encoder"),
-                Component("vae", int(total * 0.05), "vae"),
+                Component(fam.denoisers[0], unet, "denoiser", fixed=True, shardable=False),
+                Component("text_encoder", int(total * 0.2), "text_encoder", fixed=True),
+                Component("vae", int(total * 0.05), "vae", fixed=True),
             ]
+        shardable = lambda name: name != "unet" and src.id not in self._simple_load  # noqa: E731
         if snap is not None and (snap / "model_index.json").is_file():
             for name in module_components(read_model_index(snap)):
                 if src.kind == "denoiser" and name in fam.denoisers[:1]:
                     continue
                 size = folder_weight_bytes(snap / name, 4 if (name == "vae" and fam.vae_fp32) else 2)
-                comps.append(Component(name, size, _role(fam, name)))
+                comps.append(Component(name, size, _role(fam, name), shardable=shardable(name)))
         elif src.spec:
-            comps = [Component(n, int(gb * GB), _role(fam, n)) for n, gb in src.spec.components_gb.items()]
+            comps = [Component(n, int(gb * GB), _role(fam, n), shardable=shardable(n)) for n, gb in src.spec.components_gb.items()]
         if src.kind == "denoiser" and src.local:
             from .local import param_count, read_safetensors_header
 
@@ -315,43 +430,61 @@ class ModelManager:
                     size = param_count(read_safetensors_header(src.path)[0]) * 2
                 except Exception:
                     pass
-            comps.append(Component(fam.denoisers[0], size, "denoiser"))
+            gguf = src.local.fmt == "gguf"  # already compressed: its file size is what it needs
+            comps.append(Component(fam.denoisers[0], size, "denoiser", fixed=gguf, shardable=not gguf and shardable(fam.denoisers[0])))
         return comps
 
     def _gpu_vram(self, gpu_ids: list[int]) -> dict[int, int]:
         return {i: self.hw.usable_vram(i) for i in gpu_ids}
 
-    def plan(self, src: ModelSource, gpu_ids: list[int], *, gguf: bool = False) -> Plan:
+    def options(self, src: ModelSource, gpu_ids: list[int]) -> Options:
+        """The best one-card and two-card plans for these GPUs, and which one a job should use."""
         s = self.settings.settings
-        comps = self.components(src)
-        override_key = self._override_key(src, gpu_ids)
-        if override_key in self._plan_overrides:
-            return self._plan_overrides[override_key]
-        act = int(src.family.activation_gb * GB)
-        plan = make_plan(
-            comps,
+        level = min(self._oom_level.get(self._override_key(src, gpu_ids), 0), len(OOM_HEADROOM) - 1)
+        return plan_options(
+            self.components(src),
             self._gpu_vram(gpu_ids),
             self.hw.ram_total(),
-            act,
+            int(src.family.activation_gb * GB * OOM_HEADROOM[level]),
             mode_pref=s.memory_mode,
             compression=s.compression,
             can_nf4=self.can_nf4(),
             backend=self.hw.backend,
+            kind=src.family.kind,
         )
-        if src.local and src.local.fmt == "gguf":  # already compressed; never re-quantize
-            plan.quant.pop(src.family.denoisers[0], None)
-        return plan
+
+    def plan(self, src: ModelSource, gpu_ids: list[int]) -> Plan:
+        """The plan for a job that got the GPUs `gpu_ids`."""
+        if self._oom_level.get(self._override_key(src, gpu_ids), 0) >= len(OOM_HEADROOM):
+            return sequential_plan(gpu_ids[0], self.components(src), self.can_nf4())
+        return self.options(src, gpu_ids).for_gpus(len(gpu_ids))
 
     def _override_key(self, src: ModelSource, gpu_ids: list[int]) -> str:
         s = self.settings.settings
         return f"{src.id}|{','.join(map(str, gpu_ids))}|{s.memory_mode}|{s.compression}"
 
-    def gpus_needed(self, model_id: str, enabled: list[int]) -> int:
+    def describe(self, src: ModelSource, gpu_ids: list[int]) -> dict:
+        """Plan summary for the UI: what a job gets with these GPUs free, how many cards it needs or likes,
+        and (for models that like two) what it does when only one card is free."""
+        if self._oom_level.get(self._override_key(src, gpu_ids), 0) >= len(OOM_HEADROOM):
+            return {**self.plan(src, gpu_ids).public(), "gpus": [1, 1]}
+        opts = self.options(src, gpu_ids)
+        out = {**opts.for_gpus(len(gpu_ids)).public(), "gpus": list(opts.gpu_range)}
+        if opts.choice == "preferred":
+            out["alone"] = opts.single.public()
+        return out
+
+    def gpu_range(self, model_id: str, enabled: list[int]) -> tuple[int, int]:
+        """(fewest, most) graphics cards a job with this model should get."""
+        if len(enabled) < 2:
+            return (1, 1)
         try:
             src = self.resolve(model_id)
         except ModelError:
-            return 1
-        return self.plan(src, enabled).gpus_needed
+            return (1, 1)
+        if self._oom_level.get(self._override_key(src, enabled), 0) >= len(OOM_HEADROOM):
+            return (1, 1)
+        return self.options(src, enabled).gpu_range
 
     # ------------------------------------------------------------------ cache
     def loaded_on(self, slot: int) -> LoadedModel | None:
@@ -378,7 +511,7 @@ class ModelManager:
 
     def _collect(self) -> None:
         gc.collect()
-        if self.hw.backend == "cuda":
+        if self.hw.backend == "cuda" and _torch().cuda.is_available():
             torch = _torch()
             for g in self.hw.gpus:
                 with torch.cuda.device(g.index):
@@ -457,7 +590,11 @@ class ModelManager:
         return pipe, lm.plan
 
     def _make_room_in_ram(self, src: ModelSource, plan: Plan, slots: list[int]) -> None:
-        need = sum(c.bytes for c in self.components(src)) if plan.mode in ("offload", "sequential", "cpu") else 0
+        comps = self.components(src)
+        if plan.mode in ("offload", "sequential", "cpu"):
+            need = sum(size_of(c, plan.quant) for c in comps)
+        else:  # text encoders kept on the CPU
+            need = sum(c.bytes for c in comps if plan.placement.get(c.name) == CPU)
         if need and self.hw.ram_available() < need * 1.1:
             busy = self.busy_slots() - set(slots)
             with self.lock:
@@ -467,40 +604,50 @@ class ModelManager:
 
     def _load_with_fallback(self, src, task, plan: Plan, slots, status) -> LoadedModel:
         torch = _torch()
-        comps = self.components(src)
         attempt = plan
         while True:
             try:
                 pipe = self._load(src, attempt, status)
-                lm_slots = attempt.devices if attempt.mode == "split" else slots[:1]
-                lm = LoadedModel(f"{src.id}|{attempt.key}", src.id, attempt, pipe, lm_slots)
-                with self.lock:
-                    for s in lm.slots:
-                        self.loaded[s] = lm
-                if attempt is not plan:
-                    self._plan_overrides[self._override_key(src, slots)] = attempt
-                return lm
             except torch.OutOfMemoryError:
                 log.warning("Out of memory loading %s with %s", src.id, attempt.key)
                 self._collect()
-                nxt = fallback(attempt, comps, self.can_nf4())
-                if nxt is None:
+                attempt = self._safer_plan(src, slots)
+                if attempt is None:
                     raise ModelError("oom")
-                status("fallback:" + nxt.mode)
-                attempt = nxt
+                status("fallback:" + attempt.mode)
+                continue
+            except StreamLoadError as e:
+                log.warning("Streaming load of %s failed (%s); loading it the classic way", src.id, e)
+                self._simple_load.add(src.id)
+                self._collect()
+                attempt = self.plan(src, slots)
+                status("fallback:" + attempt.mode)
+                continue
+            lm_slots = attempt.devices if attempt.mode in ("split", "shard") else slots[:1]
+            lm = LoadedModel(f"{src.id}|{attempt.key}", src.id, attempt, pipe, lm_slots)
+            with self.lock:
+                for s in lm.slots:
+                    self.loaded[s] = lm
+            return lm
+
+    def _safer_plan(self, src: ModelSource, slots: list[int]) -> Plan | None:
+        """After running out of memory: plan again with more headroom. None when nothing safer is left."""
+        key = self._override_key(src, slots)
+        current = self.plan(src, slots).key
+        while self._oom_level.get(key, 0) < len(OOM_HEADROOM):
+            self._oom_level[key] = self._oom_level.get(key, 0) + 1
+            nxt = self.plan(src, slots)
+            if nxt.key != current:
+                return nxt
+        return None
 
     def report_oom(self, src: ModelSource, slots: list[int]) -> bool:
         """Called when generation runs out of memory: remember a safer plan. Returns True if one exists."""
         lm = self.loaded_on(slots[0])
-        current = lm.plan if lm else self.plan(src, slots)
-        nxt = fallback(current, self.components(src), self.can_nf4())
         if lm:
             self._drop(lm)
         self._collect()
-        if nxt is None:
-            return False
-        self._plan_overrides[self._override_key(src, slots)] = nxt
-        return True
+        return self._safer_plan(src, slots) is not None
 
     # -- component helpers
     def _quant_config(self, library: str, kind: str):
@@ -518,13 +665,11 @@ class ModelManager:
         )
 
     def _device_of(self, plan: Plan, name: str) -> str | None:
-        """Where a component should be loaded directly (None = CPU, moved later by offload hooks)."""
-        if plan.quant.get(name) == "fp8":  # load into RAM, cast to fp8 there, then move (bf16 may not fit the GPU)
-            return None
-        if plan.mode == "gpu":
-            return self.hw.device_for(plan.devices[0])
-        if plan.mode == "split":
-            g = plan.placement.get(name, plan.devices[0])
+        """Where a component is loaded directly (None = system RAM, moved later by offload hooks)."""
+        if plan.mode in ("gpu", "split", "shard"):
+            g = plan.placement.get(name, plan.devices[0]) if plan.mode != "gpu" else plan.devices[0]
+            if g == SHARDED:
+                return None  # several devices: the streaming loader places it
             return "cpu" if g == CPU else self.hw.device_for(g)
         if plan.quant.get(name) == "nf4":  # bitsandbytes quantizes while moving to the GPU
             return self.hw.device_for(plan.devices[0])
@@ -561,20 +706,11 @@ class ModelManager:
             index = read_model_index(snap)
             comps = module_components(index)
             overrides: dict[str, Any] = {}
-            if src.kind == "denoiser":
-                den = fam.denoisers[0]
-                lib, cls_name = comps[den]
-                den_cls = getattr(diffusers, cls_name)
-                kwargs: dict[str, Any] = {"config": str(snap), "subfolder": den, "dtype": dtype}
-                if src.local and src.local.fmt == "gguf":
-                    kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype=dtype)
-                elif plan.quant.get(den) == "nf4":
-                    kwargs["quantization_config"] = self._quant_config("diffusers", "nf4")
-                dev = self._device_of(plan, den)
-                if dev and dev != "cpu":
-                    kwargs["device_map"] = {"": dev}
-                status("loading:" + den)
-                overrides[den] = den_cls.from_single_file(src.path, **kwargs)
+            for name in fam.denoisers:
+                if name in comps:
+                    den = self._load_denoiser(src, snap, name, comps[name][1], plan, dtype, status)
+                    if den is not None:
+                        overrides[name] = den
             for name, (lib, cls_name) in comps.items():
                 if name in overrides:
                     continue
@@ -585,24 +721,118 @@ class ModelManager:
                     status("loading:" + name)
                     overrides[name] = self._load_component(snap, name, lib, cls_name, comp_dtype, quant, device)
             status("loading")
-            pipe = diffusers.DiffusionPipeline.from_pretrained(str(snap), dtype=dtype, **overrides)
+            # The concrete class, not DiffusionPipeline: through the generic loader, parts that are optional in the
+            # pipeline's __init__ (Wan's transformers) don't count as passed in and get loaded again from disk.
+            pipe_cls = getattr(diffusers, str(index.get("_class_name", "")), None) or diffusers.DiffusionPipeline
+            pipe = pipe_cls.from_pretrained(str(snap), dtype=dtype, **overrides)
 
-        # fp8 storage: weights kept in 8 bits, each layer upcast just before it runs
+        # fp8 storage for parts loaded the classic way: weights kept in 8 bits, each layer upcast just before it runs
         for name, q in plan.quant.items():
             module = getattr(pipe, name, None)
-            if q == "fp8" and module is not None and hasattr(module, "enable_layerwise_casting"):
-                module.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=dtype)
+            if q == "fp8" and module is not None and not getattr(module, "_es_streamed", False):
+                if hasattr(module, "enable_layerwise_casting"):
+                    module.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=dtype)
 
         if src.pipeline_config.get("flow_shift") and hasattr(pipe, "scheduler"):
             sched = pipe.scheduler
             pipe.scheduler = type(sched).from_config(sched.config, flow_shift=src.pipeline_config["flow_shift"])
 
         self._place(pipe, plan)
-        if fam.kind == "video" and hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
-            pipe.vae.enable_tiling()
+        if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling") and (fam.kind == "video" or plan.mode == "shard"):
+            pipe.vae.enable_tiling()  # bounded decode memory: videos, and image models packed tight over two GPUs
         if hasattr(pipe, "set_progress_bar_config"):
             pipe.set_progress_bar_config(disable=True)
+        self._collect()  # hand back the scratch blocks of per-tensor casting
         return pipe
+
+    def _load_denoiser(self, src: ModelSource, snap: Path, name: str, cls_name: str, plan: Plan, dtype, status):
+        """Loads one denoiser, or returns None to let the pipeline load it from the folder as usual."""
+        import diffusers
+
+        torch = _torch()
+        cls = getattr(diffusers, cls_name)
+        local = src.path if (src.kind == "denoiser" and name == src.family.denoisers[0]) else None
+        q = plan.quant.get(name)
+        dev = self._device_of(plan, name)
+        on_gpu = {"device": dev} if dev and dev != "cpu" else {}
+        status("loading:" + name)
+        if local and src.local and src.local.fmt == "gguf":
+            gguf = diffusers.GGUFQuantizationConfig(compute_dtype=dtype)
+            return cls.from_single_file(local, config=str(snap), subfolder=name, dtype=dtype, quantization_config=gguf, **on_gpu)
+        if q == "nf4":
+            if local:
+                qc = self._quant_config("diffusers", "nf4")
+                return cls.from_single_file(local, config=str(snap), subfolder=name, dtype=dtype, quantization_config=qc, **on_gpu)
+            return self._load_component(snap, name, "diffusers", cls_name, dtype, "nf4", dev)
+        if (q == "fp8" or local or plan.placement.get(name) == SHARDED) and src.id not in self._simple_load:
+            try:
+                return self._stream_denoiser(cls, snap, name, local, plan, dtype)
+            except torch.OutOfMemoryError:
+                raise
+            except (ValueError, KeyError, RuntimeError, AttributeError, TypeError, ImportError, NotImplementedError, OSError) as e:
+                log.exception("Streaming load failed for %s", src.id)
+                raise StreamLoadError(f"{type(e).__name__}: {e}") from e
+        if local:  # classic: whole file into system RAM, placed (and maybe cast to fp8) afterwards
+            return cls.from_single_file(local, config=str(snap), subfolder=name, dtype=dtype)
+        if q != "fp8" and dev and dev != "cpu":
+            return self._load_component(snap, name, "diffusers", cls_name, dtype, None, dev)
+        return None
+
+    def _stream_denoiser(self, cls, snap: Path, name: str, local: str | None, plan: Plan, dtype):
+        """Builds the denoiser empty (meta device) and streams the weights in one tensor at a time, each cast where it
+        lands: fp8 storage never needs a full-precision copy in RAM, and shard plans spread the layers over GPUs."""
+        import accelerate
+        from accelerate.utils import set_module_tensor_to_device
+
+        torch = _torch()
+        config = cls.load_config(str(snap), subfolder=name)
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(dtype)  # like from_pretrained: buffers made in __init__ get the compute dtype
+        try:
+            with accelerate.init_empty_weights():
+                model = cls.from_config(config)
+        finally:
+            torch.set_default_dtype(previous)
+        if plan.quant.get(name) == "fp8":
+            model.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=dtype)
+
+        if plan.placement.get(name) == SHARDED:
+            gpus = plan.devices[:2]
+            where = shard_split(_shard_units(model), [plan.shard[g] for g in gpus])
+            device_map = {unit: self.hw.device_for(gpus[i]) for unit, i in where.items()}
+        else:
+            device_map = {"": self._device_of(plan, name) or "cpu"}
+        # casting is much faster on a GPU: weights headed for system RAM (offload) are cast there and brought back
+        staging = self.hw.device_for(plan.devices[0]) if self.hw.backend == "cuda" else None
+        expected = {k: v.dtype for k, v in model.state_dict().items()}
+        keep = getattr(cls, "_keep_in_fp32_modules", None) or []  # matched on name parts, as diffusers does
+        for k, dt in expected.items():
+            if dt.is_floating_point and any(m in k.split(".") for m in keep):
+                expected[k] = torch.float32
+        missing = set(expected)
+        for key, tensor in _weight_stream(snap / name, local, cls, model, config):
+            if key not in expected:
+                continue
+            dev = _device_for_key(key, device_map)
+            floating = tensor.is_floating_point()
+            if floating and tensor.dtype != expected[key]:
+                tensor = tensor.to(staging if (dev == "cpu" and staging) else dev).to(expected[key]).to(dev)
+            else:
+                tensor = tensor.to(dev)
+            set_module_tensor_to_device(model, key, dev, value=tensor, dtype=expected[key] if floating else None, clear_cache=False)
+            missing.discard(key)
+        if missing:
+            raise ValueError(f"{len(missing)} weights missing, e.g. {sorted(missing)[:3]}")
+        if plan.placement.get(name) == SHARDED:
+            with warnings.catch_warnings():  # top-level parameters are listed by name, which accelerate warns about
+                warnings.simplefilter("ignore", UserWarning)
+                accelerate.dispatch_model(
+                    model, device_map=device_map, main_device=self.hw.device_for(plan.devices[0]), force_hooks=True
+                )
+            model._es_shard = {unit: gpus[i] for unit, i in where.items()}
+        model.eval()
+        model._es_streamed = True
+        return model
 
     def _place(self, pipe, plan: Plan) -> None:
         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -615,17 +845,19 @@ class ModelManager:
             pipe.enable_model_cpu_offload(device=main)
         elif plan.mode == "sequential":
             pipe.enable_sequential_cpu_offload(device=main)
-        elif plan.mode == "split":
+        elif plan.mode in ("split", "shard"):
             for name, module in pipe.components.items():
                 if not isinstance(module, torch.nn.Module):
                     continue
                 g = plan.placement.get(name, plan.devices[0])
+                if g == SHARDED:
+                    continue  # spread over the GPUs while loading, with its own hooks
                 dev = "cpu" if g == CPU else self.hw.device_for(g)
-                if plan.quant.get(name) != "nf4":
+                if plan.quant.get(name) != "nf4" and not _is_quantized(module):
                     module.to(dev)
                 if dev != main:
                     add_hook_to_module(module, AlignDevicesHook(execution_device=dev, io_same_device=True))
-            _pin_execution_device(pipe, main)
+            _pin_execution_device(pipe, main, plan)
 
     def _task_pipeline(self, lm: LoadedModel, src: ModelSource, task: str):
         import diffusers
@@ -637,8 +869,8 @@ class ModelManager:
         new = getattr(diffusers, want).from_pipe(pipe)
         if lm.plan.mode == "offload":
             new.enable_model_cpu_offload(device=self.hw.device_for(lm.plan.devices[0]))
-        elif lm.plan.mode == "split":
-            _pin_execution_device(new, self.hw.device_for(lm.plan.devices[0]))
+        elif lm.plan.mode in ("split", "shard"):
+            _pin_execution_device(new, self.hw.device_for(lm.plan.devices[0]), lm.plan)
         if hasattr(new, "set_progress_bar_config"):
             new.set_progress_bar_config(disable=True)
         lm.pipe = new

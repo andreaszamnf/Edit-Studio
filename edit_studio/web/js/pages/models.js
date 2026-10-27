@@ -3,7 +3,7 @@ import { t, desc } from "../i18n.js";
 import { api } from "../api.js";
 import { h, clear, toast, errorText, confirmBox, fmtGB, add } from "../ui.js";
 import { store, on, loadModels, loadSystem } from "../state.js";
-import { planLabel } from "../components/modelPicker.js";
+import { planLabel, planTags } from "../components/modelPicker.js";
 
 export function modelsPage(root) {
   const body = h("div", { class: "page-body" });
@@ -43,7 +43,7 @@ export function modelsPage(root) {
     h("div", { class: "tags" },
       h("span", { class: "tag" }, m.license),
       m.gated ? h("span", { class: "tag info" }, t("model.gated")) : null,
-      m.plan ? h("span", { class: "tag accent" }, planLabel(m.plan)) : null,
+      ...planTags(m.plan),
       ...(m.tags || []).map((x) => h("span", { class: "tag" }, t(`tag.${x}`)))),
     h("div", { class: "foot" },
       m.installed ? h("span", { class: "tag ok" }, "✓ " + t("models.on_disk", { gb: m.on_disk_gb })) : h("span", { class: "muted small" }, `~${fmtGB(m.download_gb)}`),
@@ -61,7 +61,8 @@ export function modelsPage(root) {
       h("td", null, m.dtype && m.dtype !== "?" ? m.dtype : ""),
       h("td", null, fmtGB(m.size / 1e9)),
       h("td", null, m.supported
-        ? (m.needs && m.needs.length ? h("span", { class: "tag warn", title: m.needs[0] }, t("model.needs_base")) : h("span", { class: "tag ok" }, t("models.ok")))
+        ? (m.needs && m.needs.length ? h("span", { class: "tag warn", title: m.needs[0] }, t("model.needs_base"))
+          : h("div", { class: "tags" }, h("span", { class: "tag ok" }, t("models.ok")), ...planTags(m.plan)))
         : h("span", { class: "tag", title: m.note }, t(`note.${(m.note || "unknown").split(":")[0]}`) !== `note.${(m.note || "unknown").split(":")[0]}` ? t(`note.${(m.note || "unknown").split(":")[0]}`) : m.note)),
       h("td", null, m.supported && m.needs && m.needs.length ? h("button", { class: "small", onclick: () => download(m.id) }, "⬇") : null),
     ));
